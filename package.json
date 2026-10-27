@@ -1,18 +1,27 @@
 {
   "name": "tellynas",
-  "version": "1.0.0",
-  "description": "Telegram as cloud storage - web frontend",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Tellynas — use Telegram as unlimited cloud storage. Next.js + Tailwind CSS frontend.",
   "scripts": {
-    "dev": "vercel dev",
-    "deploy": "vercel --prod"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "cookie-parser": "^1.4.7",
-    "node-telegram-bot-api": "^0.66.0",
-    "formidable": "^3.5.1"
+    "lucide-react": "1.62.0",
+    "next": "15.5.28",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
   },
   "devDependencies": {
-    "vercel": "^34.0.0"
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "22.10.2",
+    "@types/react": "19.1.0",
+    "@types/react-dom": "19.1.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.7.2"
   }
 }
