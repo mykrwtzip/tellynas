@@ -1,9 +1,9 @@
 const express = require('express');
-const router = express.Router();
+const app = express();
 const formidable = require('formidable');
 const { uploadFile } = require('./telegram');
 
-router.post('/upload', async (req, res) => {
+app.post('/api/upload', (req, res) => {
   const form = formidable({ multiples: false });
 
   form.parse(req, async (err, fields, files) => {
@@ -24,4 +24,4 @@ router.post('/upload', async (req, res) => {
   });
 });
 
-module.exports = router;
+module.exports = app;
