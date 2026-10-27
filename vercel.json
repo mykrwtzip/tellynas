@@ -1,0 +1,19 @@
+{
+  "buildCommand": "echo 'No build needed'",
+  "outputDirectory": "public",
+  "functions": {
+    "api/*.js": {
+      "runtime": "nodejs22.x"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)", "destination": "/$1" }
+  ],
+  "env": {
+    "TELEGRAM_BOT_TOKEN": "@vercel_env TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID": "@vercel_env TELEGRAM_CHAT_ID",
+    "APP_USERNAME": "@vercel_env APP_USERNAME",
+    "APP_PASSWORD": "@vercel_env APP_PASSWORD"
+  }
+}
