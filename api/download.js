@@ -1,8 +1,8 @@
 const express = require('express');
-const router = express.Router();
+const app = express();
 const { downloadFile } = require('./telegram');
 
-router.get('/download', async (req, res) => {
+app.get('/api/download', async (req, res) => {
   const id = req.query.id;
   if (!id) return res.status(400).json({ error: 'Missing id' });
 
@@ -16,4 +16,4 @@ router.get('/download', async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = app;
