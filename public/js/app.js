@@ -1,12 +1,16 @@
 const API = '/api';
 
 async function checkAuth() {
-  const res = await fetch(API + '/auth/check', { credentials: 'include' });
-  const data = await res.json();
-  if (data.authenticated) {
-    document.getElementById('loginScreen').classList.remove('active');
-    document.getElementById('mainScreen').classList.add('active');
-    loadFiles();
+  try {
+    const res = await fetch(API + '/auth/check', { credentials: 'include' });
+    const data = await res.json();
+    if (data.authenticated) {
+      document.getElementById('loginScreen').classList.remove('active');
+      document.getElementById('mainScreen').classList.add('active');
+      loadFiles();
+    }
+  } catch (e) {
+    console.error('Auth check failed:', e);
   }
 }
 
@@ -14,17 +18,25 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const username = document.getElementById('username').value;
   const password = document.getElementById('password').value;
-  const res = await fetch(API + '/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ username, password })
-  });
-  const data = await res.json();
-  if (data.success) {
-    checkAuth();
-  } else {
-    document.getElementById('loginError').textContent = data.error;
+  const errDiv = document.getElementById('loginError');
+  errDiv.textContent = '';
+  
+  try {
+    const res = await fetch(API + '/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+    if (data.success) {
+      checkAuth();
+    } else {
+      errDiv.textContent = data.error || 'Login failed';
+    }
+  } catch (e) {
+    errDiv.textContent = 'Network error: ' + e.message;
+    console.error('Login error:', e);
   }
 });
 
@@ -34,24 +46,32 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
 });
 
 async function loadFiles(folder = 'root') {
-  const res = await fetch(API + '/list?folder=' + folder, { credentials: 'include' });
-  const data = await res.json();
-  const list = document.getElementById('fileList');
-  list.innerHTML = '';
+  try {
+    const res = await fetch(API + '/list?folder=' + folder, { credentials: 'include' });
+    const data = await res.json();
+    const list = document.getElementById('fileList');
+    list.innerHTML = '';
 
-  data.files.forEach(file => {
-    const div = document.createElement('div');
-    div.className = 'file-item';
-    div.innerHTML = `
-      <div class="name">📄 ${file.name}</div>
-      <div class="meta">${formatSize(file.size)} · ${file.type}</div>
-      <div class="actions">
-        <button onclick="downloadFile('${file.telegramMessageId}', '${file.name}')">Download</button>
-        <button onclick="deleteFile('${file.telegramMessageId}')">Delete</button>
-      </div>
-    `;
-    list.appendChild(div);
-  });
+    if (data.files) {
+      data.files.forEach(file => {
+        const div = document.createElement('div');
+        div.className = 'file-item';
+        div.innerHTML = `
+          <div class="name">📄 ${file.name}</div>
+          <div class="meta">${formatSize(file.size)} · ${file.type}</div>
+          <div class="actions">
+            <button onclick="downloadFile('${file.telegramMessageId}', '${file.name}')">Download</button>
+            <button onclick="deleteFile('${file.telegramMessageId}')">Delete</button>
+          </div>
+        `;
+        list.appendChild(div);
+      });
+    } else if (data.error) {
+      console.error('List error:', data.error);
+    }
+  } catch (e) {
+    console.error('Load files error:', e);
+  }
 }
 
 function formatSize(bytes) {
@@ -83,17 +103,21 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
   const formData = new FormData();
   for (let f of files) formData.append('file', f);
 
-  const res = await fetch(API + '/upload', {
-    method: 'POST',
-    body: formData,
-    credentials: 'include'
-  });
-  const data = await res.json();
-  if (data.success) {
-    alert('Uploaded: ' + data.name);
-    loadFiles();
-  } else {
-    alert('Error: ' + data.error);
+  try {
+    const res = await fetch(API + '/upload', {
+      method: 'POST',
+      body: formData,
+      credentials: 'include'
+    });
+    const data = await res.json();
+    if (data.success) {
+      alert('Uploaded: ' + data.name);
+      loadFiles();
+    } else {
+      alert('Error: ' + data.error);
+    }
+  } catch (e) {
+    alert('Upload failed: ' + e.message);
   }
 });
 
