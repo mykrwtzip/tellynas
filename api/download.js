@@ -2,7 +2,7 @@ const express = require('express');
 const app = express();
 const { downloadFile } = require('./telegram');
 
-app.get('/api/download', async (req, res) => {
+const handler = async (req, res) => {
   const id = req.query.id;
   if (!id) return res.status(400).json({ error: 'Missing id' });
 
@@ -14,6 +14,9 @@ app.get('/api/download', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+};
+
+app.get('/download', handler);
+app.get('/api/download', handler);
 
 module.exports = app;
