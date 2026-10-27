@@ -5,8 +5,8 @@ const cookieParser = require('cookie-parser');
 app.use(express.json());
 app.use(cookieParser());
 
-app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body;
+const loginHandler = (req, res) => {
+  const { username, password } = req.body || {};
   const validUser = process.env.APP_USERNAME || 'admin';
   const validPass = process.env.APP_PASSWORD || 'changeme';
 
@@ -16,22 +16,30 @@ app.post('/api/auth/login', (req, res) => {
       httpOnly: true,
       secure: false,
       sameSite: 'lax',
-      maxAge: 30 * 24 * 60 * 60 * 1000
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      path: '/'
     });
     return res.json({ success: true });
   }
   res.status(401).json({ success: false, error: 'Invalid credentials' });
-});
+};
 
-app.post('/api/auth/logout', (req, res) => {
-  res.clearCookie('auth');
+const logoutHandler = (req, res) => {
+  res.clearCookie('auth', { path: '/' });
   res.json({ success: true });
-});
+};
 
-app.get('/api/auth/check', (req, res) => {
-  const auth = req.cookies.auth;
+const checkHandler = (req, res) => {
+  const auth = req.cookies && req.cookies.auth;
   if (auth) return res.json({ authenticated: true });
   res.json({ authenticated: false });
-});
+};
+
+app.post('/login', loginHandler);
+app.post('/api/auth/login', loginHandler);
+app.post('/logout', logoutHandler);
+app.post('/api/auth/logout', logoutHandler);
+app.get('/check', checkHandler);
+app.get('/api/auth/check', checkHandler);
 
 module.exports = app;
