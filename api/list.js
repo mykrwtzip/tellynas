@@ -1,8 +1,8 @@
 const express = require('express');
-const router = express.Router();
+const app = express();
 const { getChatHistory } = require('./telegram');
 
-router.get('/list', async (req, res) => {
+app.get('/api/list', async (req, res) => {
   try {
     const folder = req.query.folder || 'root';
     const messages = await getChatHistory(200);
@@ -24,4 +24,4 @@ router.get('/list', async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = app;
