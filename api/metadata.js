@@ -4,7 +4,7 @@ const { sendMetadata, deleteMessage } = require('./telegram');
 
 app.use(express.json());
 
-app.post('/api/metadata', async (req, res) => {
+const postHandler = async (req, res) => {
   try {
     const { name, size, type, folder, chunks } = req.body;
     const meta = JSON.stringify({
@@ -19,9 +19,9 @@ app.post('/api/metadata', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+};
 
-app.delete('/api/metadata', async (req, res) => {
+const deleteHandler = async (req, res) => {
   try {
     const id = req.query.id;
     await deleteMessage(id);
@@ -29,6 +29,11 @@ app.delete('/api/metadata', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+};
+
+app.post('/metadata', postHandler);
+app.post('/api/metadata', postHandler);
+app.delete('/metadata', deleteHandler);
+app.delete('/api/metadata', deleteHandler);
 
 module.exports = app;
