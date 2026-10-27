@@ -2,7 +2,7 @@ const express = require('express');
 const app = express();
 const { getChatHistory } = require('./telegram');
 
-app.get('/api/list', async (req, res) => {
+const handler = async (req, res) => {
   try {
     const folder = req.query.folder || 'root';
     const messages = await getChatHistory(200);
@@ -22,6 +22,9 @@ app.get('/api/list', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+};
+
+app.get('/list', handler);
+app.get('/api/list', handler);
 
 module.exports = app;
