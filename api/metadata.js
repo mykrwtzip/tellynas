@@ -1,8 +1,10 @@
 const express = require('express');
-const router = express.Router();
+const app = express();
 const { sendMetadata, deleteMessage } = require('./telegram');
 
-router.post('/metadata', async (req, res) => {
+app.use(express.json());
+
+app.post('/api/metadata', async (req, res) => {
   try {
     const { name, size, type, folder, chunks } = req.body;
     const meta = JSON.stringify({
@@ -19,7 +21,7 @@ router.post('/metadata', async (req, res) => {
   }
 });
 
-router.delete('/metadata', async (req, res) => {
+app.delete('/api/metadata', async (req, res) => {
   try {
     const id = req.query.id;
     await deleteMessage(id);
@@ -29,4 +31,4 @@ router.delete('/metadata', async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = app;
