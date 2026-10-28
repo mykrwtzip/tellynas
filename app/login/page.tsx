@@ -12,8 +12,8 @@ export const metadata: Metadata = {
 const FEATURES = [
   {
     icon: CloudUpload,
-    title: 'Chunked uploads',
-    body: 'Large files are split into safe chunks and streamed straight to your chat.',
+    title: 'Large file uploads',
+    body: 'Upload files of any size with live progress, pause, and automatic retry.',
   },
   {
     icon: FolderTree,
@@ -22,8 +22,8 @@ const FEATURES = [
   },
   {
     icon: ShieldCheck,
-    title: 'Private by default',
-    body: 'Signed sessions, single-user access and no third-party analytics.',
+    title: 'Available everywhere',
+    body: 'Sign in on any device and your existing files are ready immediately.',
   },
 ];
 
@@ -91,10 +91,10 @@ export default async function LoginPage({
           <div className="mt-8 flex flex-wrap items-center gap-2 text-[11px] text-muted">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-1">
               <span className="size-1.5 rounded-full bg-success" />
-              {runtime.telegramConfigured ? 'Telegram connected' : 'Demo mode'}
+              {runtime.telegramConfigured ? 'Cloud storage connected' : 'Demo workspace'}
             </span>
             <span className="inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-1">
-              Bot API · chunks of {Math.round(runtime.chunkSize / 1024 / 1024)} MB
+              Synced across devices
             </span>
           </div>
         </section>

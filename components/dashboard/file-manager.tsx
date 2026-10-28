@@ -52,8 +52,6 @@ type SortKey = 'date' | 'name' | 'size';
 type Props = {
   username: string | null;
   runtime: SessionInfo['runtime'];
-  indexBackend: string;
-  indexPersistent: boolean;
 };
 
 const SORT_LABELS: Record<SortKey, string> = {
@@ -62,7 +60,7 @@ const SORT_LABELS: Record<SortKey, string> = {
   size: 'Largest first',
 };
 
-export function FileManager({ username, runtime, indexBackend, indexPersistent }: Props) {
+export function FileManager({ username, runtime }: Props) {
   const router = useRouter();
   const toast = useToast();
   const { theme, toggleTheme } = useTheme();
@@ -165,11 +163,10 @@ export function FileManager({ username, runtime, indexBackend, indexPersistent }
 
   const handleUploaded = useCallback(
     (file: StoredFile) => {
+      library.upsertFile(file);
       toast.success(`Uploaded ${file.name}`, formatBytes(file.size));
-      void library.refresh();
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [toast],
+    [library, toast],
   );
 
   const handleUploadError = useCallback(
@@ -218,26 +215,36 @@ export function FileManager({ username, runtime, indexBackend, indexPersistent }
     setSidebarOpen(false);
   };
 
-  const download = useCallback((file: StoredFile) => {
-    const link = document.createElement('a');
-    link.href = api.downloadUrl(file.id);
-    link.download = file.name;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-  }, []);
+  const download = useCallback(
+    (file: StoredFile, silentToast = false) => {
+      if (!silentToast) {
+        toast.info(`Downloading ${file.name}`, formatBytes(file.size));
+      }
+      const link = document.createElement('a');
+      link.href = api.downloadUrl(file.id);
+      link.download = file.name;
+      link.rel = 'noopener';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    },
+    [toast],
+  );
 
   const toggleStar = useCallback(
     async (file: StoredFile) => {
+      const nextStarred = !file.starred;
+      const previous = library.snapshot();
+      library.patchFileLocal(file.id, { starred: nextStarred });
       try {
-        await api.patchFile(file.id, { starred: !file.starred });
-        await library.refresh();
+        const { file: updated } = await api.patchFile(file.id, { starred: nextStarred });
+        library.upsertFile(updated);
       } catch (error) {
+        library.restore(previous);
         toast.error('Could not update star', (error as Error).message);
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [toast],
+    [library, toast],
   );
 
   const toggleSelect = useCallback((file: StoredFile) => {
@@ -255,95 +262,154 @@ export function FileManager({ username, runtime, indexBackend, indexPersistent }
   };
 
   const createFolder = async (name: string) => {
-    setBusy(true);
-    setDialogError(null);
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const optimisticPath = folder ? `${folder}/${trimmed}` : trimmed;
+    const exists = folderNodes.some(
+      (node) => node.path.toLowerCase() === optimisticPath.toLowerCase(),
+    );
+    if (exists) {
+      setDialogError('A folder with that name already exists.');
+      return;
+    }
+
+    const previous = library.snapshot();
+    const previousFolder = folder;
+    library.addFolderLocal(optimisticPath);
+    setNewFolderOpen(false);
+    navigateFolder(optimisticPath);
+    toast.success('Folder created', optimisticPath);
+
     try {
-      const result = await api.createFolder(folder, name);
-      await library.refresh();
-      setNewFolderOpen(false);
-      toast.success('Folder created', result.path);
-      navigateFolder(result.path);
+      const result = await api.createFolder(previousFolder, trimmed);
+      if (result.path !== optimisticPath) {
+        library.renameFolderLocal(optimisticPath, result.path);
+        setFolder(result.path);
+      }
     } catch (error) {
-      setDialogError(error instanceof ApiError ? error.message : 'Could not create folder.');
-    } finally {
-      setBusy(false);
+      library.restore(previous);
+      setFolder(previousFolder);
+      toast.error(
+        'Could not create folder',
+        error instanceof ApiError ? error.message : 'Unexpected error.',
+      );
     }
   };
 
   const renameFile = async (name: string) => {
     if (!renameTarget || renameTarget.type !== 'file') return;
-    setBusy(true);
-    setDialogError(null);
+    const id = renameTarget.value;
+    const previous = library.snapshot();
+    library.patchFileLocal(id, { name });
+    setRenameTarget(null);
+    toast.success('File renamed', name);
+
     try {
-      await api.patchFile(renameTarget.value, { name });
-      await library.refresh();
-      setRenameTarget(null);
-      toast.success('File renamed', name);
+      const { file: updated } = await api.patchFile(id, { name });
+      library.upsertFile(updated);
     } catch (error) {
-      setDialogError(error instanceof ApiError ? error.message : 'Could not rename file.');
-    } finally {
-      setBusy(false);
+      library.restore(previous);
+      toast.error(
+        'Could not rename file',
+        error instanceof ApiError ? error.message : 'Unexpected error.',
+      );
     }
   };
 
   const renameFolder = async (name: string) => {
     if (!renameTarget || renameTarget.type !== 'folder') return;
-    setBusy(true);
-    setDialogError(null);
+    const oldPath = renameTarget.value;
+    const segments = oldPath.split('/');
+    const parent = segments.slice(0, -1).join('/');
+    const targetPath = parent ? `${parent}/${name}` : name;
+
+    if (
+      oldPath.toLowerCase() !== targetPath.toLowerCase() &&
+      folderNodes.some((node) => node.path.toLowerCase() === targetPath.toLowerCase())
+    ) {
+      setDialogError('A folder with that name already exists.');
+      return;
+    }
+
+    const previous = library.snapshot();
+    const previousActiveFolder = folder;
+    library.renameFolderLocal(oldPath, targetPath);
+    setRenameTarget(null);
+    if (folder === oldPath || folder.startsWith(`${oldPath}/`)) {
+      setFolder(targetPath + folder.slice(oldPath.length));
+    }
+    toast.success('Folder renamed', targetPath);
+
     try {
-      const result = await api.renameFolder(renameTarget.value, name);
-      await library.refresh();
-      setRenameTarget(null);
-      toast.success('Folder renamed', result.path);
-      if (folder === renameTarget.value || folder.startsWith(`${renameTarget.value}/`)) {
-        setFolder(result.path + folder.slice(renameTarget.value.length));
+      const result = await api.renameFolder(oldPath, name);
+      if (result.path !== targetPath) {
+        library.renameFolderLocal(targetPath, result.path);
       }
     } catch (error) {
-      setDialogError(error instanceof ApiError ? error.message : 'Could not rename folder.');
-    } finally {
-      setBusy(false);
+      library.restore(previous);
+      setFolder(previousActiveFolder);
+      toast.error(
+        'Could not rename folder',
+        error instanceof ApiError ? error.message : 'Unexpected error.',
+      );
     }
   };
 
   const moveFile = async (target: string) => {
     if (!moveTarget) return;
-    setBusy(true);
+    const targetFile = moveTarget;
+    const previous = library.snapshot();
+    library.patchFileLocal(targetFile.id, { folder: target });
+    setMoveTarget(null);
+    toast.success('File moved', target || 'Home');
+
     try {
-      await api.patchFile(moveTarget.id, { folder: target });
-      await library.refresh();
-      setMoveTarget(null);
-      toast.success('File moved', target || 'Home');
+      const { file: updated } = await api.patchFile(targetFile.id, { folder: target });
+      library.upsertFile(updated);
     } catch (error) {
+      library.restore(previous);
       toast.error('Could not move file', (error as Error).message);
-    } finally {
-      setBusy(false);
     }
   };
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
-    setBusy(true);
+    const target = deleteTarget;
+    const previous = library.snapshot();
+    setDeleteTarget(null);
+
     try {
-      if (deleteTarget.type === 'file') {
-        await api.deleteFile(deleteTarget.file.id);
-        toast.success('File deleted', deleteTarget.file.name);
-      } else if (deleteTarget.type === 'selection') {
-        await Promise.all(deleteTarget.files.map((file) => api.deleteFile(file.id)));
-        toast.success(
-          `Deleted ${deleteTarget.files.length} files`,
-          formatBytes(deleteTarget.files.reduce((sum, file) => sum + file.size, 0)),
-        );
+      if (target.type === 'file') {
+        library.removeFilesLocal([target.file.id]);
+        toast.success('File deleted', target.file.name);
+        await api.deleteFile(target.file.id);
+      } else if (target.type === 'selection') {
+        const ids = target.files.map((file) => file.id);
+        library.removeFilesLocal(ids);
         setSelection(new Set());
+        toast.success(
+          `Deleted ${target.files.length} files`,
+          formatBytes(target.files.reduce((sum, file) => sum + file.size, 0)),
+        );
+        await api.deleteFiles(ids);
       } else {
-        const result = await api.deleteFolder(deleteTarget.path);
-        toast.success('Folder deleted', `${result.removedFiles} files removed`);
+        const previousActiveFolder = folder;
+        library.removeFolderLocal(target.path);
+        if (folder === target.path || folder.startsWith(`${target.path}/`)) {
+          const parent = target.path.split('/').slice(0, -1).join('/');
+          setFolder(parent);
+        }
+        toast.success('Folder deleted', `${target.files} files removed`);
+        try {
+          await api.deleteFolder(target.path);
+        } catch (err) {
+          setFolder(previousActiveFolder);
+          throw err;
+        }
       }
-      await library.refresh();
-      setDeleteTarget(null);
     } catch (error) {
+      library.restore(previous);
       toast.error('Delete failed', (error as Error).message);
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -461,10 +527,7 @@ export function FileManager({ username, runtime, indexBackend, indexPersistent }
       return (
         <div className="space-y-1 rounded-xl border border-line bg-surface-2/60 p-3 text-[12.5px]">
           <p className="truncate font-medium text-fg">{deleteTarget.file.name}</p>
-          <p className="text-muted">
-            {formatBytes(deleteTarget.file.size)} · {deleteTarget.file.chunks.length} Telegram
-            message{deleteTarget.file.chunks.length === 1 ? '' : 's'}
-          </p>
+          <p className="text-muted">{formatBytes(deleteTarget.file.size)}</p>
         </div>
       );
     }
@@ -474,7 +537,7 @@ export function FileManager({ username, runtime, indexBackend, indexPersistent }
           <p className="font-medium text-fg">{deleteTarget.files.length} selected files</p>
           <p>
             {formatBytes(deleteTarget.files.reduce((sum, file) => sum + file.size, 0))} will be
-            removed from Telegram.
+            permanently deleted.
           </p>
         </div>
       );
@@ -804,7 +867,7 @@ export function FileManager({ username, runtime, indexBackend, indexPersistent }
                     size="sm"
                     variant="secondary"
                     onClick={() => {
-                      selectedFiles.forEach((file) => download(file));
+                      selectedFiles.forEach((file) => download(file, true));
                       toast.info(`Downloading ${selectedFiles.length} files`);
                     }}
                   >
@@ -931,7 +994,7 @@ export function FileManager({ username, runtime, indexBackend, indexPersistent }
                   <p className="mx-auto mt-1 max-w-sm text-[12.5px] leading-relaxed text-muted">
                     {debouncedQuery
                       ? 'Try a different name, or clear the search to browse folders.'
-                      : 'Drag files anywhere on this page, or use the Upload button to send them to Telegram.'}
+                      : 'Drag files anywhere on this page, or use the Upload button to add them to your library.'}
                   </p>
                   {!debouncedQuery && view !== 'starred' && (
                     <Button
@@ -978,27 +1041,13 @@ export function FileManager({ username, runtime, indexBackend, indexPersistent }
               )}
             </section>
 
-            {/* Volatile index warning (serverless without Redis) */}
-            {!indexPersistent && !runtime.demo && (
-              <div className="mt-6 flex flex-wrap items-center gap-2 rounded-xl border border-warning/25 bg-warning/10 px-3.5 py-2.5">
-                <Badge tone="warning">Not persistent</Badge>
-                <p className="text-[12px] text-warning">
-                  This host cannot write a file index, so the list is kept in memory and
-                  resets when the instance sleeps. Files stay safe in Telegram — add{' '}
-                  <code className="font-mono">UPSTASH_REDIS_REST_URL</code> to keep the list.
-                </p>
-              </div>
-            )}
-
             {/* Demo hint */}
             {runtime.demo && library.files.length > 0 && (
               <div className="mt-6 flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface-2/50 px-3.5 py-2.5">
                 <Badge tone="warning">Demo mode</Badge>
                 <p className="text-[12px] text-muted">
-                  Files live in server memory. Set{' '}
-                  <code className="font-mono text-fg-soft">TELEGRAM_BOT_TOKEN</code> and{' '}
-                  <code className="font-mono text-fg-soft">TELEGRAM_CHAT_ID</code> to store them in
-                  your chat.
+                  Sample workspace is active. Connect cloud storage in your server setup to save
+                  files permanently across devices.
                 </p>
               </div>
             )}
@@ -1106,7 +1155,7 @@ export function FileManager({ username, runtime, indexBackend, indexPersistent }
               ? 'Delete selected files?'
               : 'Delete file?'
         }
-        description="This removes the Telegram messages that hold the data."
+        description="This permanently deletes the selected items and cannot be undone."
         confirmLabel={busy ? 'Deleting…' : 'Delete'}
         busy={busy}
         details={deleteDetails}
@@ -1119,8 +1168,6 @@ export function FileManager({ username, runtime, indexBackend, indexPersistent }
         onClose={() => setSettingsOpen(false)}
         system={system}
         sessionUsername={username}
-        indexBackend={indexBackend}
-        indexPersistent={indexPersistent}
         stats={library.stats}
         onRefreshSystem={() => {
           setSystem(null);

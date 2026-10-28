@@ -15,8 +15,6 @@ export class ApiError extends Error {
 export type SessionInfo = {
   authenticated: boolean;
   username: string | null;
-  indexBackend: string;
-  indexPersistent: boolean;
   runtime: {
     demo: boolean;
     serverless: boolean;
@@ -38,8 +36,7 @@ export type ListResponse = {
 
 export type SystemInfo = {
   driver: 'telegram' | 'demo';
-  indexBackend: string;
-  indexPersistent: boolean;
+  persistent: boolean;
   serverless: boolean;
   demo: boolean;
   connection: { ok: boolean; detail: string };
@@ -86,7 +83,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
-export type UploadResult = { chunk: StoredFile['chunks'][number] };
+export type UploadResult = {
+  chunk: StoredFile['chunks'][number];
+  file?: StoredFile;
+};
 
 export const api = {
   session: () => request<SessionInfo>('/api/auth/session'),
@@ -129,6 +129,12 @@ export const api = {
 
   deleteFile: (id: string) =>
     request<{ success: boolean }>(`/api/files/${id}`, { method: 'DELETE' }),
+
+  deleteFiles: (ids: string[]) =>
+    request<{ success: boolean; deletedCount: number }>('/api/files', {
+      method: 'DELETE',
+      body: JSON.stringify({ ids }),
+    }),
 
   downloadUrl: (id: string) => `/api/files/${id}/download`,
   previewUrl: (id: string) => `/api/files/${id}/preview`,

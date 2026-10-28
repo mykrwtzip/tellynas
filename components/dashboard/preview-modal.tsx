@@ -101,7 +101,6 @@ export function PreviewModal({
           <p className="truncate text-sm font-medium">{file.name}</p>
           <p className="truncate text-[11px] text-white/55">
             {formatBytes(file.size)} · uploaded {formatDateTime(file.createdAt)}
-            {file.chunks.length > 1 ? ` · ${file.chunks.length} chunks` : ''}
           </p>
         </div>
 

@@ -264,37 +264,72 @@ export function Menu({
   align?: 'start' | 'end';
 }) {
   const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const openMenu = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect && typeof window !== 'undefined') {
+      const width = 192;
+      const estimatedHeight = items.length * 36 + 12;
+      const rawLeft = align === 'end' ? rect.right - width : rect.left;
+      const left = Math.max(8, Math.min(rawLeft, window.innerWidth - width - 8));
+      const openUpward =
+        rect.bottom + estimatedHeight > window.innerHeight - 8 &&
+        rect.top > estimatedHeight;
+      const top = openUpward
+        ? Math.max(8, rect.top - estimatedHeight - 4)
+        : rect.bottom + 4;
+      setCoords({ top, left });
+    }
+    setOpen(true);
+  };
 
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: MouseEvent) => {
-      if (!wrapperRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (
+        !wrapperRef.current?.contains(target) &&
+        !menuRef.current?.contains(target)
+      ) {
+        setOpen(false);
+      }
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
     };
+    const onScrollOrResize = () => setOpen(false);
+
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize);
     };
   }, [open]);
 
   return (
     <div ref={wrapperRef} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={(event) => {
           event.stopPropagation();
-          setOpen((value) => !value);
+          if (open) setOpen(false);
+          else openMenu();
         }}
         className={cn(
-          'inline-flex size-8 items-center justify-center rounded-lg text-muted transition-colors',
+          'inline-flex size-8 cursor-pointer items-center justify-center rounded-lg text-muted transition-colors',
           'hover:bg-surface-3 hover:text-fg',
           open && 'bg-surface-3 text-fg',
         )}
@@ -302,42 +337,46 @@ export function Menu({
         {trigger ?? <MoreVertical className="size-4" />}
       </button>
 
-      {open && (
-        <div
-          role="menu"
-          className={cn(
-            'animate-pop-in absolute z-30 mt-1 w-48 overflow-hidden rounded-xl border border-line bg-surface p-1 shadow-float',
-            align === 'end' ? 'right-0' : 'left-0',
-          )}
-        >
-          {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              role="menuitem"
-              disabled={item.disabled}
-              onClick={(event) => {
-                event.stopPropagation();
-                setOpen(false);
-                item.onSelect();
-              }}
-              className={cn(
-                'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[12.5px] transition-colors',
-                item.danger
-                  ? 'text-danger hover:bg-danger-soft'
-                  : 'text-fg-soft hover:bg-surface-2 hover:text-fg',
-                item.disabled && 'cursor-not-allowed opacity-40 hover:bg-transparent',
-              )}
-            >
-              {item.icon && <span className="shrink-0">{item.icon}</span>}
-              <span className="flex-1">{item.label}</span>
-              {item.shortcut && (
-                <span className="text-[10px] text-muted">{item.shortcut}</span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
+      {open &&
+        coords &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            style={{ top: coords.top, left: coords.left }}
+            onClick={(event) => event.stopPropagation()}
+            className="animate-pop-in fixed z-50 w-48 overflow-hidden rounded-xl border border-line bg-surface p-1 shadow-float"
+          >
+            {items.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                role="menuitem"
+                disabled={item.disabled}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpen(false);
+                  item.onSelect();
+                }}
+                className={cn(
+                  'flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[12.5px] transition-colors',
+                  item.danger
+                    ? 'text-danger hover:bg-danger-soft'
+                    : 'text-fg-soft hover:bg-surface-2 hover:text-fg',
+                  item.disabled && 'cursor-not-allowed opacity-40 hover:bg-transparent',
+                )}
+              >
+                {item.icon && <span className="shrink-0">{item.icon}</span>}
+                <span className="flex-1">{item.label}</span>
+                {item.shortcut && (
+                  <span className="text-[10px] text-muted">{item.shortcut}</span>
+                )}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

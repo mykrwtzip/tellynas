@@ -32,7 +32,8 @@ type Options = {
   onError: (message: string) => void;
 };
 
-const MAX_CONCURRENT = 2;
+const MAX_CONCURRENT = 3;
+const CHUNK_CONCURRENCY = 3;
 const MAX_RETRIES = 2;
 
 let itemCounter = 0;
@@ -64,7 +65,7 @@ export function useUploadQueue({ chunkSize, onUploaded, onError }: Options) {
     }
     if (syncScheduled.current) return;
     syncScheduled.current = true;
-    window.setTimeout(flush, 80);
+    window.setTimeout(flush, 50);
   }, []);
 
   const chunkBytes = Math.max(1, chunkSize);
@@ -76,51 +77,117 @@ export function useUploadQueue({ chunkSize, onUploaded, onError }: Options) {
 
       const totalChunks = Math.max(1, Math.ceil(item.size / chunkBytes) || 1);
       const chunks: StoredChunk[] = [];
+      const loadedPerChunk = new Array<number>(totalChunks).fill(0);
 
       item.status = 'uploading';
       item.progress = 0;
-      sync();
+      sync(true);
+
+      const updateProgress = () => {
+        const uploaded = loadedPerChunk.reduce((sum, val) => sum + val, 0);
+        item.uploadedBytes = Math.min(item.size, uploaded);
+        item.progress =
+          item.size > 0 ? Math.min(99, (item.uploadedBytes / item.size) * 100) : 99;
+        sync();
+      };
 
       try {
-        for (let index = 0; index < totalChunks; index += 1) {
-          const start = index * chunkBytes;
-          const end = Math.min(start + chunkBytes, item.size);
-          const blob = item.file.slice(start, end);
-
+        // Fast single-request path when the file fits in one slice.
+        if (totalChunks === 1) {
           const form = new FormData();
-          form.append('chunk', blob, item.name);
+          form.append('chunk', item.file, item.name);
           form.append('name', item.name);
           form.append('folder', item.folder);
-          form.append('index', String(index));
-          form.append('total', String(totalChunks));
+          form.append('mime', item.mime || 'application/octet-stream');
+          form.append('size', String(item.size));
+          form.append('index', '0');
+          form.append('total', '1');
+          form.append('finalize', '1');
 
           let attempt = 0;
+          let singleResult: Awaited<ReturnType<typeof uploadChunk>> | null = null;
           // eslint-disable-next-line no-constant-condition
           while (true) {
             try {
-              const result = await uploadChunk(form, {
+              singleResult = await uploadChunk(form, {
                 signal: controller.signal,
                 onProgress: (loaded) => {
-                  const base = (index / totalChunks) * 100;
-                  const scale = (loaded / blob.size) * (100 / totalChunks);
-                  item.progress = Math.min(99, base + scale);
-                  item.uploadedBytes = start + loaded;
-                  sync();
+                  loadedPerChunk[0] = Math.min(item.size, loaded);
+                  updateProgress();
                 },
               });
-              chunks.push(result.chunk);
               break;
             } catch (error) {
               if (controller.signal.aborted) throw error;
               attempt += 1;
               if (attempt > MAX_RETRIES) throw error;
-              await sleep(700 * attempt);
+              await sleep(500 * attempt);
             }
           }
 
-          item.progress = Math.min(99, ((index + 1) / totalChunks) * 100);
-          item.uploadedBytes = end;
-          sync();
+          if (singleResult?.file) {
+            item.status = 'done';
+            item.progress = 100;
+            item.uploadedBytes = item.size;
+            sync(true);
+            callbacks.current.onUploaded(singleResult.file);
+            return;
+          }
+          if (singleResult?.chunk) {
+            chunks.push(singleResult.chunk);
+          }
+        } else {
+          // Parallel slice upload for multi-part files.
+          let nextIndex = 0;
+          const uploadWorker = async () => {
+            while (nextIndex < totalChunks) {
+              const index = nextIndex;
+              nextIndex += 1;
+
+              const start = index * chunkBytes;
+              const end = Math.min(start + chunkBytes, item.size);
+              const blob = item.file.slice(start, end);
+
+              const form = new FormData();
+              form.append('chunk', blob, item.name);
+              form.append('name', item.name);
+              form.append('folder', item.folder);
+              form.append('index', String(index));
+              form.append('total', String(totalChunks));
+
+              let attempt = 0;
+              // eslint-disable-next-line no-constant-condition
+              while (true) {
+                try {
+                  const result = await uploadChunk(form, {
+                    signal: controller.signal,
+                    onProgress: (loaded) => {
+                      loadedPerChunk[index] = Math.min(blob.size, loaded);
+                      updateProgress();
+                    },
+                  });
+                  loadedPerChunk[index] = blob.size;
+                  chunks.push(result.chunk);
+                  updateProgress();
+                  break;
+                } catch (error) {
+                  if (controller.signal.aborted) throw error;
+                  loadedPerChunk[index] = 0;
+                  attempt += 1;
+                  if (attempt > MAX_RETRIES) throw error;
+                  await sleep(500 * attempt);
+                }
+              }
+            }
+          };
+
+          await Promise.all(
+            Array.from(
+              { length: Math.min(CHUNK_CONCURRENCY, totalChunks) },
+              () => uploadWorker(),
+            ),
+          );
+          chunks.sort((a, b) => a.index - b.index);
         }
 
         item.status = 'finalizing';
@@ -261,7 +328,10 @@ export function useUploadQueue({ chunkSize, onUploaded, onError }: Options) {
 
   const summary = useMemo(() => {
     const activeCount = items.filter(
-      (item) => item.status === 'uploading' || item.status === 'finalizing' || item.status === 'queued',
+      (item) =>
+        item.status === 'uploading' ||
+        item.status === 'finalizing' ||
+        item.status === 'queued',
     ).length;
     const pendingBytes = items
       .filter((item) => item.status === 'uploading' || item.status === 'queued')
@@ -271,5 +341,15 @@ export function useUploadQueue({ chunkSize, onUploaded, onError }: Options) {
 
   const isUploading = summary.activeCount > 0;
 
-  return { items, addFiles, cancel, retry, dismiss, clearFinished, cancelAll, isUploading, summary };
+  return {
+    items,
+    addFiles,
+    cancel,
+    retry,
+    dismiss,
+    clearFinished,
+    cancelAll,
+    isUploading,
+    summary,
+  };
 }

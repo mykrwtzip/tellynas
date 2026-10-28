@@ -2,7 +2,11 @@ import { NextResponse } from 'next/server';
 import { jsonError, requireSession, withApiGuard } from '@/lib/api';
 import { appConfig } from '@/lib/config';
 import { getDriver } from '@/lib/driver';
-import { normalizeFolder, sanitizeName } from '@/lib/store';
+import {
+  normalizeFolder,
+  sanitizeName,
+  uploadAndCreateSingleFile,
+} from '@/lib/store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -34,8 +38,10 @@ export async function POST(request: Request) {
     }
 
     const name = sanitizeName(form.get('name'));
+    const folder = normalizeFolder(form.get('folder'));
     const index = Number(form.get('index') ?? 0);
     const total = Number(form.get('total') ?? 1);
+    const finalizeNow = form.get('finalize') === '1';
 
     if (!Number.isInteger(index) || !Number.isInteger(total) || total < 1) {
       return jsonError('Invalid chunk numbering.', 400);
@@ -44,11 +50,28 @@ export async function POST(request: Request) {
       return jsonError('Chunk index is out of range.', 400);
     }
 
-    // `folder` is validated here so an interrupted upload cannot create garbage.
-    normalizeFolder(form.get('folder'));
-
     const data = new Uint8Array(await blob.arrayBuffer());
-    const chunk = await getDriver().uploadChunk({ data, name, index, total });
+
+    if (finalizeNow && total === 1 && index === 0) {
+      const mime = String(form.get('mime') || blob.type || 'application/octet-stream');
+      const size = Number(form.get('size')) || data.byteLength;
+      const { chunk, file } = await uploadAndCreateSingleFile({
+        data,
+        name,
+        mime,
+        size,
+        folder,
+      });
+      return NextResponse.json({ success: true, chunk, file, index: 0, total: 1 });
+    }
+
+    const chunk = await getDriver().uploadChunk({
+      data,
+      name,
+      folder,
+      index,
+      total,
+    });
 
     return NextResponse.json({ success: true, chunk, index, total });
   });

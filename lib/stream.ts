@@ -2,12 +2,19 @@ import type { StoredChunk } from './types';
 
 type ChunkFetcher = (fileId: string) => Promise<{ stream: ReadableStream<Uint8Array> }>;
 
+type SliceEntry = {
+  chunk: StoredChunk;
+  chunkStart: number;
+  chunkEnd: number;
+};
+
 async function* iterateRange(
   chunks: StoredChunk[],
   fetchChunk: ChunkFetcher,
   start: number,
   end: number,
 ): AsyncGenerator<Uint8Array> {
+  const needed: SliceEntry[] = [];
   let cursor = 0;
 
   for (const chunk of chunks) {
@@ -17,40 +24,64 @@ async function* iterateRange(
 
     if (chunkEnd < start) continue;
     if (chunkStart > end) break;
+    needed.push({ chunk, chunkStart, chunkEnd });
+  }
 
-    const { stream } = await fetchChunk(chunk.fileId);
-    const reader = stream.getReader();
-    let position = chunkStart;
+  if (needed.length === 0) return;
 
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (!value || value.byteLength === 0) continue;
+  // Prefetch the next chunk stream while streaming the current one so multi-part
+  // downloads and media playback transition seamlessly without dead-air pauses.
+  let nextPromise: ReturnType<ChunkFetcher> | null = fetchChunk(needed[0].chunk.fileId);
 
-        const bufferStart = position;
-        const bufferEnd = position + value.byteLength - 1;
-        position += value.byteLength;
+  try {
+    for (let idx = 0; idx < needed.length; idx += 1) {
+      const current = needed[idx];
+      const currentFetch = nextPromise ?? fetchChunk(current.chunk.fileId);
+      nextPromise =
+        idx + 1 < needed.length ? fetchChunk(needed[idx + 1].chunk.fileId) : null;
+      // Prevent unhandled rejection if current stream cancels before nextPromise is awaited.
+      nextPromise?.catch(() => undefined);
 
-        if (bufferEnd < start) continue;
-        if (bufferStart > end) {
-          await reader.cancel().catch(() => undefined);
-          return;
+      const { stream } = await currentFetch;
+      const reader = stream.getReader();
+      let position = current.chunkStart;
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!value || value.byteLength === 0) continue;
+
+          const bufferStart = position;
+          const bufferEnd = position + value.byteLength - 1;
+          position += value.byteLength;
+
+          if (bufferEnd < start) continue;
+          if (bufferStart > end) {
+            await reader.cancel().catch(() => undefined);
+            return;
+          }
+
+          const from = Math.max(0, start - bufferStart);
+          const to = Math.min(value.byteLength - 1, end - bufferStart);
+          yield value.subarray(from, to + 1);
         }
-
-        const from = Math.max(0, start - bufferStart);
-        const to = Math.min(value.byteLength - 1, end - bufferStart);
-        yield value.subarray(from, to + 1);
+      } finally {
+        reader.releaseLock();
       }
-    } finally {
-      reader.releaseLock();
+    }
+  } finally {
+    if (nextPromise) {
+      nextPromise
+        .then(({ stream }) => stream.cancel().catch(() => undefined))
+        .catch(() => undefined);
     }
   }
 }
 
 /**
  * Streams a stored file (or a byte range of it) by chaining the streams of the
- * Telegram documents it was split into.
+ * stored slices with lookahead prefetching.
  */
 export function createStoredFileStream(
   chunks: StoredChunk[],

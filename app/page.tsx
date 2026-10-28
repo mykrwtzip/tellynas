@@ -1,7 +1,6 @@
 import { redirect } from 'next/navigation';
 import { getSession } from '@/lib/api';
 import { publicRuntimeConfig } from '@/lib/config';
-import { getIndexBackend, isIndexPersistent } from '@/lib/store';
 import { FileManager } from '@/components/dashboard/file-manager';
 
 export const dynamic = 'force-dynamic';
@@ -11,12 +10,5 @@ export default async function DrivePage() {
 
   if (!session) redirect('/login');
 
-  return (
-    <FileManager
-      username={session.sub}
-      runtime={publicRuntimeConfig()}
-      indexBackend={getIndexBackend()}
-      indexPersistent={isIndexPersistent()}
-    />
-  );
+  return <FileManager username={session.sub} runtime={publicRuntimeConfig()} />;
 }

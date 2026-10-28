@@ -171,11 +171,23 @@ export function FileCard({
             <Star className="mt-0.5 size-3.5 shrink-0 fill-warning/80 text-warning" />
           )}
         </div>
-        <div className="mt-1 flex items-center justify-between gap-2">
+        <div className="mt-1 flex items-center justify-between gap-1">
           <p className="truncate text-[11px] text-muted">
             {formatBytes(file.size)} · {formatRelativeTime(file.createdAt)}
           </p>
-          <div onClick={(event) => event.stopPropagation()}>
+          <div
+            className="flex shrink-0 items-center gap-0.5"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              aria-label={`Download ${file.name}`}
+              title={`Download ${file.name}`}
+              onClick={() => handlers.onDownload(file)}
+              className="inline-flex size-8 cursor-pointer items-center justify-center rounded-lg text-muted opacity-100 transition-colors hover:bg-surface-3 hover:text-fg sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100"
+            >
+              <Download className="size-3.5" />
+            </button>
             <Menu items={menuItems(file, handlers)} label={`Actions for ${file.name}`} />
           </div>
         </div>
