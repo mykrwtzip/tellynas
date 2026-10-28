@@ -36,6 +36,6 @@ export async function withApiGuard<T>(
     // 4xx errors are user-actionable (bad config), don't log as error
     if (status >= 500) console.error('[tellynas] API error:', error);
     else console.warn('[tellynas] API warn:', message);
-    return jsonError(message, status >= 400 && status < 600 ? status : 500);
+    return jsonError(status >= 500 ? 'The server could not complete the request.' : message, status >= 400 && status < 600 ? status : 500);
   }
 }

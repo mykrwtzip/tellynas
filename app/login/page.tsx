@@ -53,7 +53,7 @@ export default async function LoginPage({
   ]);
 
   if (session) {
-    redirect(next && next.startsWith('/') ? next : '/');
+    redirect(next && next.startsWith('/') && !next.startsWith('//') && !next.includes('\\') ? next : '/');
   }
 
   return (
@@ -99,7 +99,7 @@ export default async function LoginPage({
           </div>
 
           <p className="mt-4 text-center text-[11.5px] text-muted">
-            End-to-end authenticated session · Instant search &amp; previews
+            Authenticated session · Instant search &amp; previews
           </p>
         </section>
 

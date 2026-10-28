@@ -377,6 +377,9 @@ export function parseDirectory(raw: string | null | undefined): StorageDirectory
         fileName,
         createdAt: Number(rawEntry.createdAt) || undefined,
         expiresAt: Number(rawEntry.expiresAt) || undefined,
+        passwordHash: typeof rawEntry.passwordHash === 'string' ? rawEntry.passwordHash : undefined,
+        targetType: rawEntry.targetType === 'folder' ? 'folder' : 'file',
+        folderCreatedAt: Number(rawEntry.folderCreatedAt) || undefined,
       });
     }
   }

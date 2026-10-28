@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { jsonError, withApiGuard } from '@/lib/api';
 import { getDriver } from '@/lib/driver';
-import { getShares, getStoredFile } from '@/lib/store';
+import { canAccessShare } from '@/lib/share-security';
+import { getShares, getStoredFile, getIndex } from '@/lib/store';
 import { createStoredFileStream } from '@/lib/stream';
 
 export const runtime = 'nodejs';
@@ -10,8 +11,8 @@ export const maxDuration = 300;
 
 type RouteContext = { params: Promise<{ token: string }> };
 
-/* Public: anyone with the token can download the file (no sign-in required). */
-export async function GET(_request: Request, context: RouteContext) {
+/* Anyone with the link can access this shared file. */
+export async function GET(request: Request, context: RouteContext) {
   return withApiGuard(async () => {
     const { token } = await context.params;
     const shares = await getShares();
@@ -22,7 +23,15 @@ export async function GET(_request: Request, context: RouteContext) {
       return jsonError('This share link has expired.', 410);
     }
 
-    const file = await getStoredFile(share.targetId);
+    if (!(await canAccessShare(share))) return jsonError('Password required.', 403);
+
+    let file;
+    if (share.targetType === 'folder') {
+      const index = await getIndex();
+      if (!index.folders.some(folder => folder.path === share.targetId && folder.createdAt === share.folderCreatedAt)) return jsonError('The shared folder is no longer available.', 410);
+      const id = new URL(request.url).searchParams.get('file');
+      file = index.files.find(item => item.id === id && !item.archived && (item.folder === share.targetId || item.folder.startsWith(`${share.targetId}/`)));
+    } else file = await getStoredFile(share.targetId);
     if (!file) return jsonError('The shared file is no longer available.', 410);
 
     const driver = getDriver();
@@ -38,7 +47,9 @@ export async function GET(_request: Request, context: RouteContext) {
         'Content-Type': file.mime || 'application/octet-stream',
         'Content-Length': String(file.size),
         'Content-Disposition': `attachment; filename="${safeAscii(file.name)}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-        'Cache-Control': 'public, max-age=300',
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
       },
     });
   });

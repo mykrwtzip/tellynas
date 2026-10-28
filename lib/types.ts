@@ -50,6 +50,9 @@ export type StorageShare = {
   /** Id of the shared file. */ targetId: string;
   /** When the share was created (epoch ms). */ createdAt: number;
   /** Optional expiry (epoch ms). After this the link stops working. */ expiresAt?: number;
+  passwordHash?: string;
+  targetType?: 'file' | 'folder';
+  folderCreatedAt?: number;
 };
 
 
@@ -112,6 +115,9 @@ export type DirectoryEntry =
       /** Id of the file the link points to. */ targetId: string;
       /** When the link was created (epoch ms). */ createdAt?: number;
       /** Optional expiry (epoch ms). */ expiresAt?: number;
+      passwordHash?: string;
+      targetType?: 'file' | 'folder';
+      folderCreatedAt?: number;
     } & StoredObjectRef)
 
 export type StorageDirectory = {

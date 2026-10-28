@@ -750,33 +750,38 @@ export async function createStoredFile(input: {
   folder: string;
   chunks: StoredChunk[];
 }): Promise<StoredFile> {
+  const driver = getDriver();
+  const id = randomUUID();
+  const folder = normalizeFolder(input.folder);
+  const desiredName = sanitizeName(input.name);
+  const mime = String(input.mime || 'application/octet-stream').slice(0, 200);
+  const computedSize = input.chunks.reduce((sum, chunk) => sum + chunk.size, 0);
+  const size = Number.isFinite(input.size) && input.size > 0 ? input.size : computedSize;
+  const now = Date.now();
+
+  const optimisticRecord: StoredFile = {
+    id,
+    name: desiredName,
+    size,
+    mime,
+    folder,
+    chunks: input.chunks,
+    createdAt: now,
+    updatedAt: now,
+    starred: false,
+    archived: false,
+  };
+
+  // Start independent metadata uploads immediately, even when another file is
+  // committing its directory entry. Keep directory reads/writes serialized.
+  const sidecarPromise = driver.writeSidecar(serializeFileSidecar(optimisticRecord));
+  // The commit may wait behind another upload; avoid an unhandled rejection
+  // while preserving the failure for Promise.all below.
+  void sidecarPromise.catch(() => undefined);
   return runExclusive(async () => {
-    const driver = getDriver();
-    const id = randomUUID();
-    const folder = normalizeFolder(input.folder);
-    const desiredName = sanitizeName(input.name);
-    const mime = String(input.mime || 'application/octet-stream').slice(0, 200);
-    const computedSize = input.chunks.reduce((sum, chunk) => sum + chunk.size, 0);
-    const size = Number.isFinite(input.size) && input.size > 0 ? input.size : computedSize;
-    const now = Date.now();
-
-    const optimisticRecord: StoredFile = {
-      id,
-      name: desiredName,
-      size,
-      mime,
-      folder,
-      chunks: input.chunks,
-      createdAt: now,
-      updatedAt: now,
-      starred: false,
-      archived: false,
-    };
-
-    // Scan existing directory and upload the new file's sidecar concurrently.
     const [scanned, preUploadedSidecar] = await Promise.all([
       scanDriverStorage(driver, { freshRead: true }),
-      driver.writeSidecar(serializeFileSidecar(optimisticRecord)),
+      sidecarPromise,
     ]);
 
     return commitCreatedFile(driver, scanned, {
@@ -1506,6 +1511,9 @@ export async function getShares(): Promise<StorageShare[]> {
       targetId: entry.targetId,
       createdAt: entry.createdAt ?? Date.now(),
       expiresAt: entry.expiresAt,
+      passwordHash: entry.passwordHash,
+      targetType: entry.targetType,
+      folderCreatedAt: entry.folderCreatedAt,
     }));
 }
 
@@ -1513,13 +1521,16 @@ export async function createShare(input: {
   targetId: string;
   token: string;
   expiresAt?: number;
+  passwordHash?: string;
+  targetType?: 'file' | 'folder';
 }): Promise<StorageShare> {
   return runExclusive(async () => {
     const driver = getDriver();
     await ensureDemoSeeded(driver);
 
-    const file = await getStoredFile(input.targetId);
-    if (!file) throw new Error('File not found.');
+    const file = input.targetType === 'folder' ? null : await getStoredFile(input.targetId);
+    const folder = input.targetType === 'folder' ? (await getIndex()).folders.find(f => f.path === input.targetId) : null;
+    if (!file && !folder) throw new Error('Share target not found.');
 
     const now = Date.now();
     const share: StorageShare = {
@@ -1527,6 +1538,9 @@ export async function createShare(input: {
       targetId: input.targetId,
       createdAt: now,
       expiresAt: input.expiresAt,
+      passwordHash: input.passwordHash,
+      targetType: input.targetType || 'file',
+      folderCreatedAt: folder?.createdAt,
     };
 
     const ref = await driver.writeSidecar({
@@ -1537,7 +1551,7 @@ export async function createShare(input: {
           v: 1,
           kind: 'share',
           token: input.token,
-          target: file.name.slice(0, 140),
+          target: (file?.name || folder?.path || '').slice(0, 140),
           createdAt: now,
         },
         `tellynas:share:v1 ${input.token}`,
@@ -1558,6 +1572,9 @@ export async function createShare(input: {
         targetId: input.targetId,
         createdAt: now,
         expiresAt: input.expiresAt,
+        passwordHash: input.passwordHash,
+        targetType: input.targetType || 'file',
+        folderCreatedAt: folder?.createdAt,
         ...ref,
       },
     ];

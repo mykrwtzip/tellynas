@@ -30,7 +30,7 @@ export function LoginForm({ next, runtime }: Props) {
   const [error, setError] = useState<string | null>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
 
-  const target = next && next.startsWith('/') ? next : '/';
+  const target = next && next.startsWith('/') && !next.startsWith('//') && !next.includes('\\') ? next : '/';
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();

@@ -15,6 +15,7 @@ type SessionPayload = {
   sub: string;
   iat: number;
   exp: number;
+  credentialVersion: string;
 };
 
 const ALPHABET =
@@ -95,6 +96,7 @@ export async function createSessionToken(username: string): Promise<string> {
     sub: username,
     iat: now,
     exp: now + SESSION_MAX_AGE,
+    credentialVersion: toBase64Url(await sign(`credentials:${appConfig.appUsername}:${appConfig.appPassword}`)),
   };
   const body = toBase64Url(encoder.encode(JSON.stringify(payload)));
   const signature = toBase64Url(await sign(body));
@@ -118,7 +120,7 @@ export async function verifySessionToken(
     if (diff !== 0) return null;
 
     const payload = JSON.parse(decoder.decode(fromBase64Url(body))) as SessionPayload;
-    if (!payload?.exp || payload.exp * 1000 < Date.now()) return null;
+    if (!securityConfigured() || !payload?.exp || payload.exp * 1000 < Date.now() || payload.sub !== appConfig.appUsername || payload.credentialVersion !== toBase64Url(await sign(`credentials:${appConfig.appUsername}:${appConfig.appPassword}`))) return null;
     return payload;
   } catch {
     // Malformed cookie, missing secret, unavailable crypto — all mean "no session".
@@ -126,7 +128,12 @@ export async function verifySessionToken(
   }
 }
 
+export function securityConfigured(): boolean {
+  return process.env.NODE_ENV !== 'production' || (Boolean(process.env.APP_USERNAME) && Boolean(process.env.APP_PASSWORD) && appConfig.appPassword.length >= 12 && appConfig.appPassword !== 'changeme' && Boolean(process.env.AUTH_SECRET) && appConfig.authSecret.length >= 32);
+}
+
 export function credentialsAreValid(username: string, password: string): boolean {
+  if (!securityConfigured()) return false;
   // Constant-ish time comparison keeps the endpoint from leaking length info.
   const expectedUser = appConfig.appUsername;
   const expectedPass = appConfig.appPassword;

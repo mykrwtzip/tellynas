@@ -156,15 +156,18 @@ export const api = {
 
   listArchived: () => request<ListResponse>('/api/files?archived=1'),
 
-  createShare: (id: string, body?: { expiresAt?: number }) =>
+  createShare: (id: string, body?: { expiresAt?: number; password?: string }) =>
     request<{ success: boolean; token: string; url: string }>(
       `/api/files/${id}/share`,
       { method: 'POST', body: JSON.stringify(body ?? {}) },
     ),
 
+  createFolderShare: (path: string, body?: { expiresAt?: number; password?: string }) =>
+    request<{ success: boolean; token: string; url: string }>('/api/folders/share', { method: 'POST', body: JSON.stringify({ path, ...body }) }),
+
   shares: () =>
     request<{
-      share: { token: string; createdAt: number; expiresAt?: number };
+      share: { token: string; createdAt: number; expiresAt?: number; passwordProtected?: boolean; targetType?: 'file' | 'folder' };
       file: { id: string; name: string; size: number; mime: string };
       downloadUrl: string;
     }[]>('/api/shares'),
