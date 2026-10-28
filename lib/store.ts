@@ -178,35 +178,55 @@ async function migrateLegacyIndexIfNeeded(driver: StorageDriver): Promise<boolea
 /*                              Demo seed data                                */
 /* -------------------------------------------------------------------------- */
 
-const DEMO_TEXT = `Welcome to Tellynas!
+const DEMO_TEXT = `# Welcome to Tellynas
 
-Tellynas turns your private storage into a clean personal cloud drive.
+Your private, zero-clutter personal cloud drive.
 
-You are currently in DEMO MODE:
-  - sample files are stored in temporary demo memory
-  - uploads, folders, previews, renames and deletes all work
-  - sign in from any device once cloud storage is configured
+## Quick tips
+- Press **⌘K** (or **Ctrl+K**) anywhere to search files, jump into folders, or run commands.
+- Drag files from your desktop, or press **⌘V** to upload screenshots directly from your clipboard.
+- Right-click any file, folder, or empty space for quick context actions.
+- Press **I** to toggle the file & folder details inspector.
 `;
 
-const DEMO_ROADMAP = `# Tellynas roadmap
+const DEMO_CODE = `export const workspaceConfig = {
+  name: 'Tellynas Studio',
+  sync: 'cross-device',
+  shortcuts: {
+    commandPalette: 'Mod+K',
+    upload: 'U',
+    newFolder: 'N',
+    inspector: 'I',
+  },
+} as const;
+`;
 
-- [x] Multi-part uploads with automatic recovery
-- [x] Drag & drop upload queue
-- [x] Folders, search, sorting, grid/list views
-- [x] Media & document preview lightbox
-- [x] Dark & light themes
-- [ ] Share links with expiring tokens
+const DEMO_COVER = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111113"/>
+      <stop offset="1" stop-color="#1c1c21"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity="0.09"/>
+    </pattern>
+  </defs>
+  <rect width="800" height="500" fill="url(#bg)"/>
+  <rect width="800" height="500" fill="url(#grid)"/>
+  <g transform="translate(270 120)">
+    <rect width="260" height="260" rx="56" fill="#18181b" stroke="#3f3f46" stroke-width="2"/>
+    <path d="M56 96L130 58L204 96L130 134L56 96Z" fill="#fafafa"/>
+    <path d="M56 138L130 176L204 138" stroke="#a1a1aa" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <path d="M56 180L130 218L204 180" stroke="#52525b" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+</svg>
 `;
 
 const DEMO_LOGO = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#38bdf8"/>
-      <stop offset="1" stop-color="#8b5cf6"/>
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" rx="112" fill="#0b1220"/>
-  <path d="M128 336l-24-152 304-56-56 264-96-72-64 64-8-96z" fill="url(#g)"/>
+  <rect width="512" height="512" rx="116" fill="#09090b"/>
+  <path d="M256 108L404 184L256 260L108 184L256 108Z" fill="#fafafa"/>
+  <path d="M108 256L256 332L404 256" stroke="#a1a1aa" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M108 328L256 404L404 328" stroke="#52525b" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </svg>
 `;
 
@@ -220,24 +240,32 @@ const DEMO_SEEDS: Array<{
 }> = [
   {
     id: 'seed-0',
-    name: 'Welcome to Tellynas.txt',
-    mime: 'text/plain',
+    name: 'Studio-Keynote-Cover.svg',
+    mime: 'image/svg+xml',
+    folder: '',
+    content: DEMO_COVER,
+    starred: true,
+  },
+  {
+    id: 'seed-1',
+    name: 'Welcome to Tellynas.md',
+    mime: 'text/markdown',
     folder: '',
     content: DEMO_TEXT,
     starred: true,
   },
   {
-    id: 'seed-1',
-    name: 'roadmap.md',
-    mime: 'text/markdown',
+    id: 'seed-2',
+    name: 'workspace.config.ts',
+    mime: 'text/typescript',
     folder: '',
-    content: DEMO_ROADMAP,
+    content: DEMO_CODE,
   },
   {
-    id: 'seed-2',
-    name: 'logo.svg',
+    id: 'seed-3',
+    name: 'brand-mark.svg',
     mime: 'image/svg+xml',
-    folder: 'assets',
+    folder: 'Design',
     content: DEMO_LOGO,
   },
 ];

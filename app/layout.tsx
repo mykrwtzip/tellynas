@@ -1,14 +1,16 @@
 import type { Metadata, Viewport } from 'next';
+import { GeistSans } from 'geist/font/sans';
+import { GeistMono } from 'geist/font/mono';
 import './globals.css';
 import { Providers } from '@/components/providers';
 
 export const metadata: Metadata = {
   title: {
-    default: 'Tellynas — your files, stored on Telegram',
+    default: 'Tellynas — Personal Cloud Drive',
     template: '%s · Tellynas',
   },
   description:
-    'Tellynas turns a Telegram chat into unlimited personal cloud storage with folders, previews, search and instant downloads.',
+    'Fast, private personal cloud storage with instant search, rich previews, and cross-device sync.',
   applicationName: 'Tellynas',
   icons: {
     icon: '/icon.svg',
@@ -17,8 +19,8 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#f5f6fa' },
-    { media: '(prefers-color-scheme: dark)', color: '#070b14' },
+    { media: '(prefers-color-scheme: light)', color: '#f8f8f9' },
+    { media: '(prefers-color-scheme: dark)', color: '#09090b' },
   ],
   width: 'device-width',
   initialScale: 1,
@@ -38,12 +40,15 @@ const themeScript = `
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${GeistSans.variable} ${GeistMono.variable}`}
+    >
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body className="min-h-dvh antialiased">
-        <div className="ambient" aria-hidden />
         <Providers>{children}</Providers>
       </body>
     </html>
