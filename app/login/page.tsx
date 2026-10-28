@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
+import { redirect } from 'next/navigation';
 import { ShieldCheck, CloudUpload, FolderTree, Sparkles } from 'lucide-react';
+import { getSession } from '@/lib/api';
 import { publicRuntimeConfig } from '@/lib/config';
 import { LoginForm } from '@/components/login-form';
 
@@ -30,7 +32,16 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<{ next?: string }>;
 }) {
-  const [{ next }, runtime] = await Promise.all([searchParams, publicRuntimeConfig()]);
+  const [{ next }, runtime, session] = await Promise.all([
+    searchParams,
+    publicRuntimeConfig(),
+    getSession(),
+  ]);
+
+  // Already signed in (and the target is local) — skip the form entirely.
+  if (session) {
+    redirect(next && next.startsWith('/') ? next : '/');
+  }
 
   return (
     <main className="relative flex min-h-dvh items-center justify-center px-4 py-10">

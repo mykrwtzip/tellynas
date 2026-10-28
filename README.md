@@ -78,7 +78,35 @@ lib/
   store.ts                   file index (Redis / JSON file / memory)
   stream.ts                  chunk concatenation + Range parsing
   auth.ts, config.ts, api.ts, use-library.ts, use-uploads.ts, client-api.ts
-middleware.ts                route + API protection
+```
+
+### How access control works
+
+There is intentionally **no `middleware.ts`**. Every server entry point checks the
+session itself:
+
+- `app/page.tsx` → `getSession()` + `redirect('/login')`
+- every protected route handler → `requireSession()` → `401 { error }`
+- `app/login/page.tsx` → redirects to `/` when a valid session already exists
+
+Route handlers run on the Node.js runtime, which avoids Edge-runtime middlewares
+entirely. (An Edge middleware that even *imports* a shared module touching
+`atob`/`btoa`/`Buffer` can fail to boot and turn the whole deployment into
+`500 MIDDLEWARE_INVOCATION_FAILED` — this is what happened in the first
+deployment of the rewrite.)
+
+### Health check
+
+`GET /api/health` is public and returns runtime details without touching the
+network — handy for uptime monitors and for confirming a fresh Vercel deploy:
+
+```json
+{
+  "status": "ok",
+  "runtime": { "node": "v22.x", "environment": "production", "vercel": true },
+  "storage": { "driver": "telegram", "indexBackend": "redis", "chunkSizeMb": 8 },
+  "config": { "usingDefaultPassword": false, "hasAuthSecret": true }
+}
 ```
 
 ### Why a separate index?
@@ -104,9 +132,14 @@ downloads. Choose the index backend for your host:
 
 **Vercel**
 
-1. Import the repository, framework preset **Next.js**.
+1. Import the repository — `vercel.json` pins the framework preset to **Next.js**.
 2. Add the environment variables above (including Upstash Redis for persistence).
 3. Deploy, then sign in at `/login`.
+
+The serverless filesystem is read-only, so with no Redis configured the index
+falls back to in-memory storage and resets on every cold start. Set
+`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` on Vercel.
+Keep `TELEGRAM_CHUNK_MB` at `4` or lower there (Vercel caps request bodies).
 
 **Self-hosted**
 
