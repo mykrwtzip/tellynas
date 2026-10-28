@@ -101,7 +101,7 @@ export function Sidebar({
             Tellynas
           </p>
           <p className="truncate text-[11px] text-muted">
-            {demo ? 'Demo storage' : 'Telegram storage'}
+            {demo ? 'Demo workspace' : 'Personal cloud'}
           </p>
         </div>
         {onCloseMobile && (
@@ -230,10 +230,10 @@ export function Sidebar({
           </p>
           <div className="mt-2 flex flex-wrap gap-1.5">
             <Badge tone="neutral">{stats.fileCount} files</Badge>
-            <Badge tone="neutral">{stats.chunkCount} msgs</Badge>
+            <Badge tone="neutral">{stats.folderCount} folders</Badge>
           </div>
           <p className="mt-2 text-[10.5px] leading-relaxed text-muted">
-            Telegram has no practical cap — every chunk is a saved message.
+            Your library stays available whenever you sign in.
           </p>
         </div>
 

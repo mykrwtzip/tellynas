@@ -1,162 +1,177 @@
 /**
- * File index persistence.
+ * Storage-native indexing and metadata reconstruction.
  *
- * Telegram has no Bot API method to read chat history, so Tellynas keeps its own
- * index of what has been uploaded. Three interchangeable backends are supported:
- *
- *  - redis : Upstash REST (best for serverless / multi-instance deployments)
- *  - file  : a JSON file on disk (self-hosted, local development)
- *  - memory: process memory (demo mode, or a read-only host with no Redis)
- *
- * Serverless hosts (Vercel, Lambda, Netlify) have a read-only, per-instance
- * filesystem, so the file backend is skipped there and the index degrades to
- * memory instead of throwing on every upload. Set Upstash Redis to persist.
+ * The storage backend itself (Telegram chat documents or the simulated demo driver)
+ * is the single source of truth:
+ *  - Every file is stored with meaningful filenames, embedded caption metadata,
+ *    and a `.tellynas.meta.json` sidecar document.
+ *  - Explicit folders are stored as `.tellynas.folder.json` sidecar documents.
+ *  - A pinned `_tellynas.directory.json` manifest stores sidecar references and
+ *    embedded metadata so any stateless instance or new device can discover and
+ *    reconstruct the library rapidly without external databases or local caches.
  */
 
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { appConfig, useDemoDriver } from './config';
-import { demoChunkStore } from './driver';
-import type { StorageIndex, StorageStats, StoredFile, StoredFolder } from './types';
+import { useDemoDriver } from './config';
+import { demoStorageState, getDriver } from './driver';
+import {
+  parseSidecarRecord,
+  serializeFileSidecar,
+  serializeFolderSidecar,
+  sidecarToStoredFile,
+  toEmbeddedFileMeta,
+} from './metadata';
+import type {
+  DirectoryEntry,
+  SidecarRecord,
+  StorageDirectory,
+  StorageDriver,
+  StorageIndex,
+  StorageStats,
+  StoredChunk,
+  StoredFile,
+  StoredFolder,
+} from './types';
 
-const INDEX_KEY = 'tellynas:index';
-const DATA_DIR = path.join(process.cwd(), '.data');
-const DATA_FILE = path.join(DATA_DIR, 'index.json');
+const SCAN_CONCURRENCY = 8;
+const LEGACY_INDEX_FILE = path.join(process.cwd(), '.data', 'index.json');
 
-type BackendKind = 'redis' | 'file' | 'memory';
+let legacyMigrationAttempted = false;
 
-type AnyGlobal = typeof globalThis & {
-  __tellynasIndex?: StorageIndex;
-  __tellynasSeeded?: boolean;
-};
-
-const globalState = () => globalThis as AnyGlobal;
-
-function preferredBackend(): BackendKind {
-  if (appConfig.redisUrl) return 'redis';
-  if (useDemoDriver()) return 'memory';
-  // No writable, persistent disk on serverless hosts.
-  if (appConfig.serverless) return 'memory';
-  return 'file';
-}
-
-let activeBackend: BackendKind = preferredBackend();
-let warnedAboutVolatileIndex = false;
-
-/** Which index backend is actually in use (may degrade at runtime). */
-export const getIndexBackend = (): BackendKind => activeBackend;
-
-/** False when the index only lives in the memory of one server instance. */
-export const isIndexPersistent = (): boolean => activeBackend !== 'memory';
-
-function degradeToMemory(reason: unknown) {
-  if (activeBackend === 'memory') return;
-  activeBackend = 'memory';
-  if (!warnedAboutVolatileIndex) {
-    warnedAboutVolatileIndex = true;
-    console.warn(
-      '[tellynas] index storage is not writable — falling back to in-memory index.',
-      'Set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN to persist across restarts.',
-      reason,
-    );
-  }
-}
-
-const emptyIndex = (): StorageIndex => ({ version: 1, files: [], folders: [] });
-
-function normalizeIndex(value: unknown): StorageIndex {
-  if (!value || typeof value !== 'object') return emptyIndex();
-  const candidate = value as Partial<StorageIndex>;
-  return {
-    version: 1,
-    files: Array.isArray(candidate.files) ? candidate.files : [],
-    folders: Array.isArray(candidate.folders) ? candidate.folders : [],
-  };
-}
-
-async function redisCommand<T>(command: unknown[]): Promise<T | null> {
-  const response = await fetch(appConfig.redisUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${appConfig.redisToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(command),
-    cache: 'no-store',
-  });
-  if (!response.ok) {
-    throw new Error(`Index store request failed (HTTP ${response.status}).`);
-  }
-  const payload = (await response.json()) as { result?: T };
-  return payload.result ?? null;
-}
-
-async function loadIndex(): Promise<StorageIndex> {
-  try {
-    if (activeBackend === 'redis') {
-      const raw = await redisCommand<string>(['GET', INDEX_KEY]);
-      if (!raw) return emptyIndex();
-      return normalizeIndex(typeof raw === 'string' ? JSON.parse(raw) : raw);
-    }
-
-    if (activeBackend === 'file') {
-      const raw = await fs.readFile(DATA_FILE, 'utf8');
-      return normalizeIndex(JSON.parse(raw));
-    }
-
-    return globalState().__tellynasIndex ?? emptyIndex();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      console.error('[tellynas] failed to load index', error);
-    }
-    return emptyIndex();
-  }
-}
-
-async function persistIndex(index: StorageIndex): Promise<void> {
-  if (activeBackend === 'redis') {
-    await redisCommand(['SET', INDEX_KEY, JSON.stringify(index)]);
-    return;
-  }
-
-  if (activeBackend === 'file') {
-    try {
-      await fs.mkdir(DATA_DIR, { recursive: true });
-      await fs.writeFile(DATA_FILE, JSON.stringify(index, null, 2), 'utf8');
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code ?? '';
-      if (['EROFS', 'EACCES', 'EPERM', 'ENOTSUP', 'ENOENT', 'ENOTDIR'].includes(code)) {
-        // Read-only filesystem (serverless): keep working, in memory.
-        degradeToMemory(error);
-      } else {
-        throw error;
-      }
-    }
-  }
-
-  globalState().__tellynasIndex = index;
-}
-
-/** Serialise read-modify-write cycles so concurrent requests cannot clobber data. */
+/** Serializes concurrent storage mutations on this process to prevent write races. */
 let writeQueue: Promise<unknown> = Promise.resolve();
 
-export function mutateIndex<T>(mutator: (index: StorageIndex) => T): Promise<T> {
-  const run = async () => {
-    const index = await ensureSeeded(await loadIndex());
-    const result = mutator(index);
-    await persistIndex(index);
-    return result;
-  };
-
-  const next = writeQueue.then(run, run);
+function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const next = writeQueue.then(fn, fn);
   writeQueue = next.catch(() => undefined);
   return next;
 }
 
-export async function getIndex(): Promise<StorageIndex> {
-  await writeQueue.catch(() => undefined);
-  return ensureSeeded(await loadIndex());
+/**
+ * Coalesces simultaneous in-flight directory reads from the same request burst
+ * (e.g. a grid of image thumbnails) without retaining any state once resolved.
+ */
+let inFlightDirectoryRead: ReturnType<StorageDriver['readDirectory']> | null = null;
+
+function readDirectoryShared(driver: StorageDriver) {
+  if (!inFlightDirectoryRead) {
+    inFlightDirectoryRead = driver.readDirectory().finally(() => {
+      inFlightDirectoryRead = null;
+    });
+  }
+  return inFlightDirectoryRead;
+}
+
+async function mapConcurrent<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const current = cursor;
+      cursor += 1;
+      results[current] = await mapper(items[current]);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
+const emptyDirectory = (): StorageDirectory => ({
+  schema: 'tellynas.directory.v1',
+  updatedAt: 0,
+  entries: [],
+});
+
+/* -------------------------------------------------------------------------- */
+/*                       Legacy `.data/index.json` import                     */
+/* -------------------------------------------------------------------------- */
+
+async function migrateLegacyIndexIfNeeded(driver: StorageDriver): Promise<boolean> {
+  if (driver.mode !== 'telegram' || legacyMigrationAttempted) return false;
+  legacyMigrationAttempted = true;
+
+  let raw: string;
+  try {
+    raw = await fs.readFile(LEGACY_INDEX_FILE, 'utf8');
+  } catch {
+    return false;
+  }
+
+  let parsed: Partial<StorageIndex> | null = null;
+  try {
+    parsed = JSON.parse(raw) as Partial<StorageIndex>;
+  } catch {
+    return false;
+  }
+
+  const legacyFiles = Array.isArray(parsed?.files) ? parsed.files : [];
+  const legacyFolders = Array.isArray(parsed?.folders) ? parsed.folders : [];
+  if (legacyFiles.length === 0 && legacyFolders.length === 0) return false;
+
+  const entries: DirectoryEntry[] = [];
+
+  for (const folder of legacyFolders) {
+    if (!folder?.path) continue;
+    const normalizedPath = normalizeFolder(folder.path);
+    if (!normalizedPath) continue;
+    const createdAt = Number(folder.createdAt) || Date.now();
+    const serialized = serializeFolderSidecar({ path: normalizedPath, createdAt });
+    const uploaded = await driver.writeSidecar(serialized);
+    entries.push({
+      kind: 'folder',
+      path: normalizedPath,
+      createdAt,
+      ...uploaded,
+    });
+  }
+
+  for (const file of legacyFiles) {
+    if (!file?.id || !file?.name || !Array.isArray(file.chunks) || file.chunks.length === 0) {
+      continue;
+    }
+    const cleanFile: StoredFile = {
+      id: String(file.id),
+      name: sanitizeName(file.name),
+      size: Number(file.size) || file.chunks.reduce((sum, c) => sum + Number(c.size || 0), 0),
+      mime: String(file.mime || 'application/octet-stream'),
+      folder: normalizeFolder(file.folder),
+      chunks: file.chunks,
+      createdAt: Number(file.createdAt) || Date.now(),
+      updatedAt: Number(file.updatedAt) || Number(file.createdAt) || Date.now(),
+      starred: Boolean(file.starred),
+    };
+    const serialized = serializeFileSidecar(cleanFile);
+    const uploaded = await driver.writeSidecar(serialized);
+    entries.push({
+      kind: 'file',
+      id: cleanFile.id,
+      meta: toEmbeddedFileMeta(cleanFile),
+      ...uploaded,
+    });
+  }
+
+  if (entries.length > 0) {
+    await driver.writeDirectory({
+      schema: 'tellynas.directory.v1',
+      updatedAt: Date.now(),
+      entries,
+    });
+  }
+
+  await fs
+    .rename(LEGACY_INDEX_FILE, `${LEGACY_INDEX_FILE}.migrated`)
+    .catch(() => undefined);
+
+  return entries.length > 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -165,32 +180,22 @@ export async function getIndex(): Promise<StorageIndex> {
 
 const DEMO_TEXT = `Welcome to Tellynas!
 
-Tellynas turns a Telegram chat into personal cloud storage.
+Tellynas turns your private storage into a clean personal cloud drive.
 
-You are currently in DEMO MODE, which means:
-  - files live in this server's memory (they vanish on restart)
+You are currently in DEMO MODE:
+  - sample files are stored in temporary demo memory
   - uploads, folders, previews, renames and deletes all work
-  - nothing is sent to Telegram
-
-To connect real storage, set these environment variables and restart:
-
-  TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-  TELEGRAM_CHAT_ID=your_private_chat_id
-  APP_USERNAME=admin
-  APP_PASSWORD=a-strong-password
-
-Then send /start to your bot once, and upload away.
+  - sign in from any device once cloud storage is configured
 `;
 
 const DEMO_ROADMAP = `# Tellynas roadmap
 
-- [x] Chunked uploads to Telegram
+- [x] Multi-part uploads with automatic recovery
 - [x] Drag & drop upload queue
 - [x] Folders, search, sorting, grid/list views
-- [x] Image preview lightbox
+- [x] Media & document preview lightbox
 - [x] Dark & light themes
 - [ ] Share links with expiring tokens
-- [ ] Multi-chat support
 `;
 
 const DEMO_LOGO = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
@@ -206,6 +211,7 @@ const DEMO_LOGO = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"
 `;
 
 const DEMO_SEEDS: Array<{
+  id: string;
   name: string;
   mime: string;
   folder: string;
@@ -213,54 +219,887 @@ const DEMO_SEEDS: Array<{
   starred?: boolean;
 }> = [
   {
+    id: 'seed-0',
     name: 'Welcome to Tellynas.txt',
     mime: 'text/plain',
     folder: '',
     content: DEMO_TEXT,
     starred: true,
   },
-  { name: 'roadmap.md', mime: 'text/markdown', folder: '', content: DEMO_ROADMAP },
-  { name: 'logo.svg', mime: 'image/svg+xml', folder: 'assets', content: DEMO_LOGO },
+  {
+    id: 'seed-1',
+    name: 'roadmap.md',
+    mime: 'text/markdown',
+    folder: '',
+    content: DEMO_ROADMAP,
+  },
+  {
+    id: 'seed-2',
+    name: 'logo.svg',
+    mime: 'image/svg+xml',
+    folder: 'assets',
+    content: DEMO_LOGO,
+  },
 ];
 
-async function ensureSeeded(index: StorageIndex): Promise<StorageIndex> {
-  const global = globalState();
-  if (global.__tellynasSeeded) return index;
-  global.__tellynasSeeded = true;
+async function ensureDemoSeeded(driver: StorageDriver): Promise<void> {
+  if (!useDemoDriver() || driver.mode !== 'demo') return;
+  const state = demoStorageState();
+  if (state.seeded) return;
+  state.seeded = true;
 
-  const shouldSeed =
-    useDemoDriver() &&
-    activeBackend === 'memory' &&
-    index.files.length === 0 &&
-    index.folders.length === 0;
-  if (!shouldSeed) return index;
-
-  const chunks = demoChunkStore();
+  const encoder = new TextEncoder();
   const now = Date.now();
+  const entries: DirectoryEntry[] = [];
+  const createdFolders = new Set<string>();
 
   for (const [position, seed] of DEMO_SEEDS.entries()) {
-    const fileId = `demo-seed-${position}`;
-    chunks.set(fileId, new TextEncoder().encode(seed.content));
-    if (seed.folder && !index.folders.some((f) => f.path === seed.folder)) {
-      index.folders.push({ path: seed.folder, createdAt: now });
+    if (seed.folder && !createdFolders.has(seed.folder)) {
+      createdFolders.add(seed.folder);
+      const folderSidecar = serializeFolderSidecar({
+        path: seed.folder,
+        createdAt: now,
+      });
+      const folderRef = await driver.writeSidecar(folderSidecar);
+      entries.push({
+        kind: 'folder',
+        path: seed.folder,
+        createdAt: now,
+        ...folderRef,
+      });
     }
-    index.files.push({
-      id: `seed-${position}`,
+
+    const bytes = encoder.encode(seed.content);
+    const chunk = await driver.uploadChunk({
+      data: bytes,
+      name: seed.name,
+      folder: seed.folder,
+      index: 0,
+      total: 1,
+    });
+
+    const timestamp = now - (position + 1) * 3_600_000;
+    const record: StoredFile = {
+      id: seed.id,
       name: seed.name,
       mime: seed.mime,
       folder: seed.folder,
-      size: seed.content.length,
-      chunks: [
-        // High ids keep demo seeds clear of the upload counter.
-        { index: 0, messageId: 1000 + position, fileId, size: seed.content.length },
-      ],
-      createdAt: now - (position + 1) * 3_600_000,
-      updatedAt: now - (position + 1) * 3_600_000,
+      size: bytes.byteLength,
+      chunks: [chunk],
+      createdAt: timestamp,
+      updatedAt: timestamp,
       starred: Boolean(seed.starred),
+    };
+
+    const sidecar = serializeFileSidecar(record);
+    const sidecarRef = await driver.writeSidecar(sidecar);
+    entries.push({
+      kind: 'file',
+      id: record.id,
+      meta: toEmbeddedFileMeta(record),
+      ...sidecarRef,
     });
   }
 
+  await driver.writeDirectory({
+    schema: 'tellynas.directory.v1',
+    updatedAt: now,
+    entries,
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     Storage scanning & reconstruction                      */
+/* -------------------------------------------------------------------------- */
+
+function applySidecarRecord(
+  record: SidecarRecord,
+  filesById: Map<string, StoredFile>,
+  foldersByPath: Map<string, StoredFolder>,
+) {
+  if (record.schema === 'tellynas.file.v1') {
+    const file = sidecarToStoredFile(record);
+    const normalized: StoredFile = {
+      ...file,
+      name: sanitizeName(file.name),
+      folder: normalizeFolder(file.folder),
+    };
+    const existing = filesById.get(normalized.id);
+    if (!existing || normalized.updatedAt >= existing.updatedAt) {
+      filesById.set(normalized.id, normalized);
+    }
+
+    const segments = normalized.folder.split('/').filter(Boolean);
+    for (let i = 0; i < segments.length; i += 1) {
+      const ancestor = segments.slice(0, i + 1).join('/');
+      if (!foldersByPath.has(ancestor)) {
+        foldersByPath.set(ancestor, {
+          path: ancestor,
+          createdAt: normalized.createdAt,
+        });
+      }
+    }
+    return;
+  }
+
+  const normalizedPath = normalizeFolder(record.path);
+  if (!normalizedPath) return;
+
+  const segments = normalizedPath.split('/');
+  for (let i = 0; i < segments.length; i += 1) {
+    const current = segments.slice(0, i + 1).join('/');
+    const existing = foldersByPath.get(current);
+    if (!existing || (current === normalizedPath && record.createdAt < existing.createdAt)) {
+      foldersByPath.set(current, {
+        path: current,
+        createdAt: record.createdAt,
+      });
+    }
+  }
+}
+
+async function resolveEntryRecord(
+  driver: StorageDriver,
+  entry: DirectoryEntry,
+): Promise<SidecarRecord | null> {
+  if (entry.kind === 'file' && entry.meta) {
+    return {
+      schema: 'tellynas.file.v1',
+      id: entry.id,
+      ...entry.meta,
+    };
+  }
+  if (entry.kind === 'folder' && entry.createdAt !== undefined) {
+    return {
+      schema: 'tellynas.folder.v1',
+      path: entry.path,
+      createdAt: entry.createdAt,
+    };
+  }
+
+  const text = await driver.readSidecarText(entry.fileId);
+  if (!text) return null;
+  return parseSidecarRecord(text);
+}
+
+async function scanDriverStorage(
+  driver: StorageDriver,
+  options: { freshRead?: boolean } = {},
+): Promise<{
+  index: StorageIndex;
+  directory: StorageDirectory;
+  directoryMessageId: number | null;
+}> {
+  await ensureDemoSeeded(driver);
+
+  let discovered = options.freshRead
+    ? await driver.readDirectory()
+    : await readDirectoryShared(driver);
+
+  if (!discovered.directory && !discovered.standaloneSidecar) {
+    const migrated = await migrateLegacyIndexIfNeeded(driver);
+    if (migrated) {
+      discovered = await driver.readDirectory();
+    }
+  }
+
+  const filesById = new Map<string, StoredFile>();
+  const foldersByPath = new Map<string, StoredFolder>();
+
+  if (discovered.standaloneSidecar) {
+    applySidecarRecord(discovered.standaloneSidecar, filesById, foldersByPath);
+  }
+
+  const directory = discovered.directory ?? emptyDirectory();
+
+  const records = await mapConcurrent(directory.entries, SCAN_CONCURRENCY, (entry) =>
+    resolveEntryRecord(driver, entry),
+  );
+
+  for (const record of records) {
+    if (record) {
+      applySidecarRecord(record, filesById, foldersByPath);
+    }
+  }
+
+  return {
+    index: {
+      version: 1,
+      files: [...filesById.values()],
+      folders: [...foldersByPath.values()],
+    },
+    directory,
+    directoryMessageId: discovered.messageId,
+  };
+}
+
+/**
+ * Reconstructs the library index from stored metadata directly via the active
+ * storage driver (no external database, no local cache).
+ */
+export async function getIndex(): Promise<StorageIndex> {
+  const { index } = await scanDriverStorage(getDriver());
   return index;
+}
+
+/**
+ * Resolves a single stored file directly from storage metadata without blocking
+ * on unrelated mutations or scanning unrelated sidecar files.
+ */
+export async function getStoredFile(id: string): Promise<StoredFile | null> {
+  const driver = getDriver();
+  await ensureDemoSeeded(driver);
+
+  const discovered = await readDirectoryShared(driver);
+  if (
+    discovered.standaloneSidecar?.schema === 'tellynas.file.v1' &&
+    discovered.standaloneSidecar.id === id
+  ) {
+    return sidecarToStoredFile(discovered.standaloneSidecar);
+  }
+
+  const entry = discovered.directory?.entries.find(
+    (item): item is Extract<DirectoryEntry, { kind: 'file' }> =>
+      item.kind === 'file' && item.id === id,
+  );
+  if (!entry) return null;
+
+  const record = await resolveEntryRecord(driver, entry);
+  if (!record || record.schema !== 'tellynas.file.v1') return null;
+
+  return {
+    ...sidecarToStoredFile(record),
+    name: sanitizeName(record.name),
+    folder: normalizeFolder(record.folder),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                             Storage mutations                              */
+/* -------------------------------------------------------------------------- */
+
+function uniqueName(existing: string[], desired: string): string {
+  const taken = new Set(existing.map((name) => name.toLowerCase()));
+  if (!taken.has(desired.toLowerCase())) return desired;
+
+  const dot = desired.lastIndexOf('.');
+  const stem = dot > 0 ? desired.slice(0, dot) : desired;
+  const extension = dot > 0 ? desired.slice(dot) : '';
+
+  let counter = 2;
+  let candidate = `${stem} (${counter})${extension}`;
+  while (taken.has(candidate.toLowerCase())) {
+    counter += 1;
+    candidate = `${stem} (${counter})${extension}`;
+  }
+  return candidate;
+}
+
+async function ensureAncestorFolderEntries(
+  driver: StorageDriver,
+  entries: DirectoryEntry[],
+  existingFolders: StoredFolder[],
+  folder: string,
+  now: number,
+): Promise<DirectoryEntry[]> {
+  if (!folder) return entries;
+  const next = [...entries];
+  const known = new Set([
+    ...existingFolders.map((item) => item.path.toLowerCase()),
+    ...next
+      .filter(
+        (item): item is Extract<DirectoryEntry, { kind: 'folder' }> =>
+          item.kind === 'folder',
+      )
+      .map((item) => item.path.toLowerCase()),
+  ]);
+
+  const missingSegments: string[] = [];
+  const segments = folder.split('/').filter(Boolean);
+  for (let i = 0; i < segments.length; i += 1) {
+    const ancestor = segments.slice(0, i + 1).join('/');
+    if (known.has(ancestor.toLowerCase())) continue;
+    known.add(ancestor.toLowerCase());
+    missingSegments.push(ancestor);
+  }
+
+  if (missingSegments.length === 0) return next;
+
+  const uploadedFolders = await mapConcurrent(
+    missingSegments,
+    SCAN_CONCURRENCY,
+    async (ancestor) => {
+      const sidecar = serializeFolderSidecar({ path: ancestor, createdAt: now });
+      const uploaded = await driver.writeSidecar(sidecar);
+      return {
+        kind: 'folder' as const,
+        path: ancestor,
+        createdAt: now,
+        ...uploaded,
+      };
+    },
+  );
+
+  return [...next, ...uploadedFolders];
+}
+
+async function commitCreatedFile(
+  driver: StorageDriver,
+  scanned: Awaited<ReturnType<typeof scanDriverStorage>>,
+  input: {
+    id: string;
+    desiredName: string;
+    mime: string;
+    size: number;
+    folder: string;
+    chunks: StoredChunk[];
+    now: number;
+    preUploadedSidecar?: Awaited<ReturnType<StorageDriver['writeSidecar']>>;
+  },
+): Promise<StoredFile> {
+  const { index, directory, directoryMessageId } = scanned;
+  const siblings = index.files
+    .filter((entry) => entry.folder === input.folder)
+    .map((entry) => entry.name);
+  const finalName = uniqueName(siblings, input.desiredName);
+
+  const record: StoredFile = {
+    id: input.id,
+    name: finalName,
+    size: input.size,
+    mime: input.mime,
+    folder: input.folder,
+    chunks: input.chunks,
+    createdAt: input.now,
+    updatedAt: input.now,
+    starred: false,
+  };
+
+  let sidecarRef = input.preUploadedSidecar;
+  if (!sidecarRef || finalName !== input.desiredName) {
+    const serialized = serializeFileSidecar(record);
+    sidecarRef = await driver.writeSidecar({
+      ...serialized,
+      existingMessageId: sidecarRef?.messageId,
+    });
+  }
+
+  let entries = await ensureAncestorFolderEntries(
+    driver,
+    directory.entries,
+    index.folders,
+    input.folder,
+    input.now,
+  );
+
+  entries = [
+    ...entries.filter((item) => !(item.kind === 'file' && item.id === record.id)),
+    {
+      kind: 'file',
+      id: record.id,
+      meta: toEmbeddedFileMeta(record),
+      ...sidecarRef,
+    },
+  ];
+
+  await driver.writeDirectory(
+    {
+      schema: 'tellynas.directory.v1',
+      updatedAt: input.now,
+      entries,
+    },
+    directoryMessageId,
+  );
+
+  return record;
+}
+
+export async function createStoredFile(input: {
+  name: string;
+  mime: string;
+  size: number;
+  folder: string;
+  chunks: StoredChunk[];
+}): Promise<StoredFile> {
+  return runExclusive(async () => {
+    const driver = getDriver();
+    const id = randomUUID();
+    const folder = normalizeFolder(input.folder);
+    const desiredName = sanitizeName(input.name);
+    const mime = String(input.mime || 'application/octet-stream').slice(0, 200);
+    const computedSize = input.chunks.reduce((sum, chunk) => sum + chunk.size, 0);
+    const size = Number.isFinite(input.size) && input.size > 0 ? input.size : computedSize;
+    const now = Date.now();
+
+    const optimisticRecord: StoredFile = {
+      id,
+      name: desiredName,
+      size,
+      mime,
+      folder,
+      chunks: input.chunks,
+      createdAt: now,
+      updatedAt: now,
+      starred: false,
+    };
+
+    // Scan existing directory and upload the new file's sidecar concurrently.
+    const [scanned, preUploadedSidecar] = await Promise.all([
+      scanDriverStorage(driver, { freshRead: true }),
+      driver.writeSidecar(serializeFileSidecar(optimisticRecord)),
+    ]);
+
+    return commitCreatedFile(driver, scanned, {
+      id,
+      desiredName,
+      mime,
+      size,
+      folder,
+      chunks: input.chunks,
+      now,
+      preUploadedSidecar,
+    });
+  });
+}
+
+/**
+ * Single-request upload + finalization for files that fit in one slice, cutting
+ * client-server round-trips and overlapping chunk upload with directory discovery.
+ */
+export async function uploadAndCreateSingleFile(input: {
+  data: Uint8Array;
+  name: string;
+  mime: string;
+  size: number;
+  folder: string;
+}): Promise<{ chunk: StoredChunk; file: StoredFile }> {
+  const driver = getDriver();
+  const folder = normalizeFolder(input.folder);
+  const desiredName = sanitizeName(input.name);
+  const mime = String(input.mime || 'application/octet-stream').slice(0, 200);
+  const size =
+    Number.isFinite(input.size) && input.size > 0 ? input.size : input.data.byteLength;
+
+  // Upload the chunk bytes outside the directory lock so multiple files upload concurrently.
+  const chunk = await driver.uploadChunk({
+    data: input.data,
+    name: desiredName,
+    folder,
+    index: 0,
+    total: 1,
+  });
+
+  const file = await createStoredFile({
+    name: desiredName,
+    mime,
+    size,
+    folder,
+    chunks: [chunk],
+  });
+
+  return { chunk, file };
+}
+
+export async function updateStoredFile(
+  id: string,
+  changes: { name?: string; folder?: string; starred?: boolean },
+): Promise<StoredFile | null> {
+  return runExclusive(async () => {
+    const driver = getDriver();
+    await ensureDemoSeeded(driver);
+
+    const discovered = await driver.readDirectory();
+    const directory = discovered.directory ?? emptyDirectory();
+    const entryIndex = directory.entries.findIndex(
+      (item) => item.kind === 'file' && item.id === id,
+    );
+    if (entryIndex === -1) return null;
+
+    const currentEntry = directory.entries[entryIndex] as Extract<
+      DirectoryEntry,
+      { kind: 'file' }
+    >;
+    const existingRecord = await resolveEntryRecord(driver, currentEntry);
+    if (!existingRecord || existingRecord.schema !== 'tellynas.file.v1') return null;
+
+    const now = Date.now();
+    const updated: StoredFile = {
+      ...sidecarToStoredFile(existingRecord),
+      name:
+        typeof changes.name === 'string' && changes.name.trim()
+          ? sanitizeName(changes.name, existingRecord.name)
+          : sanitizeName(existingRecord.name),
+      folder:
+        typeof changes.folder === 'string'
+          ? normalizeFolder(changes.folder)
+          : normalizeFolder(existingRecord.folder),
+      starred:
+        typeof changes.starred === 'boolean'
+          ? changes.starred
+          : Boolean(existingRecord.starred),
+      updatedAt: now,
+    };
+
+    const sidecar = serializeFileSidecar(updated);
+    const savedRef = await driver.writeSidecar({
+      ...sidecar,
+      existingMessageId: currentEntry.messageId,
+    });
+
+    let entries = [...directory.entries];
+    entries[entryIndex] = {
+      kind: 'file',
+      id: updated.id,
+      meta: toEmbeddedFileMeta(updated),
+      ...savedRef,
+    };
+
+    if (typeof changes.folder === 'string' && updated.folder) {
+      entries = await ensureAncestorFolderEntries(
+        driver,
+        entries,
+        [],
+        updated.folder,
+        now,
+      );
+    }
+
+    await driver.writeDirectory(
+      {
+        schema: 'tellynas.directory.v1',
+        updatedAt: now,
+        entries,
+      },
+      discovered.messageId,
+    );
+
+    return updated;
+  });
+}
+
+export async function deleteStoredFiles(ids: string[]): Promise<number> {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (uniqueIds.length === 0) return 0;
+
+  return runExclusive(async () => {
+    const driver = getDriver();
+    await ensureDemoSeeded(driver);
+
+    const discovered = await driver.readDirectory();
+    const directory = discovered.directory ?? emptyDirectory();
+    const doomedSet = new Set(uniqueIds);
+
+    const targets = directory.entries.filter(
+      (item): item is Extract<DirectoryEntry, { kind: 'file' }> =>
+        item.kind === 'file' && doomedSet.has(item.id),
+    );
+    if (targets.length === 0) return 0;
+
+    const resolvedRecords = await mapConcurrent(
+      targets,
+      SCAN_CONCURRENCY,
+      (target) => resolveEntryRecord(driver, target),
+    );
+
+    const remaining = directory.entries.filter(
+      (item) => !(item.kind === 'file' && doomedSet.has(item.id)),
+    );
+
+    const chunkMessageIds = resolvedRecords.flatMap((record) =>
+      record && record.schema === 'tellynas.file.v1'
+        ? record.chunks.map((chunk) => chunk.messageId)
+        : [],
+    );
+    const messageIds = [
+      ...targets.map((target) => target.messageId),
+      ...chunkMessageIds,
+    ];
+
+    await Promise.all([
+      driver.writeDirectory(
+        {
+          schema: 'tellynas.directory.v1',
+          updatedAt: Date.now(),
+          entries: remaining,
+        },
+        discovered.messageId,
+      ),
+      driver.deleteMessages(messageIds),
+    ]);
+
+    return targets.length;
+  });
+}
+
+export async function deleteStoredFile(id: string): Promise<StoredFile | null> {
+  return runExclusive(async () => {
+    const driver = getDriver();
+    await ensureDemoSeeded(driver);
+
+    const discovered = await driver.readDirectory();
+    const directory = discovered.directory ?? emptyDirectory();
+    const target = directory.entries.find(
+      (item): item is Extract<DirectoryEntry, { kind: 'file' }> =>
+        item.kind === 'file' && item.id === id,
+    );
+    if (!target) return null;
+
+    const resolved = await resolveEntryRecord(driver, target);
+    const file =
+      resolved && resolved.schema === 'tellynas.file.v1'
+        ? sidecarToStoredFile(resolved)
+        : null;
+
+    const remaining = directory.entries.filter(
+      (item) => !(item.kind === 'file' && item.id === id),
+    );
+
+    const messageIds = [
+      target.messageId,
+      ...(file ? file.chunks.map((chunk) => chunk.messageId) : []),
+    ];
+
+    await Promise.all([
+      driver.writeDirectory(
+        {
+          schema: 'tellynas.directory.v1',
+          updatedAt: Date.now(),
+          entries: remaining,
+        },
+        discovered.messageId,
+      ),
+      driver.deleteMessages(messageIds),
+    ]);
+
+    return (
+      file ?? {
+        id,
+        name: target.fileName,
+        size: 0,
+        mime: 'application/octet-stream',
+        folder: '',
+        chunks: [],
+        createdAt: 0,
+        updatedAt: 0,
+        starred: false,
+      }
+    );
+  });
+}
+
+export async function createStoredFolder(
+  parentInput: unknown,
+  nameInput: unknown,
+): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
+  return runExclusive(async () => {
+    const parent = normalizeFolder(parentInput);
+    const name = sanitizeName(nameInput, '');
+    if (!name) return { ok: false, error: 'Give the folder a name.' };
+
+    const targetPath = parent ? `${parent}/${name}` : name;
+    const driver = getDriver();
+    const { index, directory, directoryMessageId } = await scanDriverStorage(driver, {
+      freshRead: true,
+    });
+
+    if (
+      index.folders.some(
+        (entry) => entry.path.toLowerCase() === targetPath.toLowerCase(),
+      )
+    ) {
+      return { ok: false, error: 'A folder with that name already exists.' };
+    }
+
+    const now = Date.now();
+    const entries = await ensureAncestorFolderEntries(
+      driver,
+      directory.entries,
+      index.folders,
+      targetPath,
+      now,
+    );
+
+    await driver.writeDirectory(
+      {
+        schema: 'tellynas.directory.v1',
+        updatedAt: now,
+        entries,
+      },
+      directoryMessageId,
+    );
+
+    return { ok: true, path: targetPath };
+  });
+}
+
+export async function renameStoredFolder(
+  pathInput: unknown,
+  nameInput: unknown,
+): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
+  return runExclusive(async () => {
+    const sourcePath = normalizeFolder(pathInput);
+    const name = sanitizeName(nameInput, '');
+    if (!sourcePath) return { ok: false, error: 'Missing folder path.' };
+    if (!name) return { ok: false, error: 'Give the folder a name.' };
+
+    const segments = sourcePath.split('/');
+    const parent = segments.slice(0, -1).join('/');
+    const targetPath = parent ? `${parent}/${name}` : name;
+
+    const driver = getDriver();
+    const { index, directory, directoryMessageId } = await scanDriverStorage(driver, {
+      freshRead: true,
+    });
+
+    if (
+      sourcePath.toLowerCase() !== targetPath.toLowerCase() &&
+      index.folders.some(
+        (entry) => entry.path.toLowerCase() === targetPath.toLowerCase(),
+      )
+    ) {
+      return { ok: false, error: 'A folder with that name already exists.' };
+    }
+
+    const renamePath = (value: string) =>
+      value === sourcePath || value.startsWith(`${sourcePath}/`)
+        ? `${targetPath}${value.slice(sourcePath.length)}`
+        : value;
+
+    const now = Date.now();
+    const filesById = new Map(index.files.map((file) => [file.id, file]));
+    const foldersByPath = new Map(index.folders.map((folder) => [folder.path, folder]));
+
+    const updatedEntries = await mapConcurrent(
+      directory.entries,
+      SCAN_CONCURRENCY,
+      async (entry): Promise<DirectoryEntry> => {
+        if (entry.kind === 'folder') {
+          if (entry.path !== sourcePath && !entry.path.startsWith(`${sourcePath}/`)) {
+            return entry;
+          }
+          const newPath = renamePath(entry.path);
+          const folderMeta = foldersByPath.get(entry.path) ?? {
+            path: newPath,
+            createdAt: now,
+          };
+          const serialized = serializeFolderSidecar({
+            path: newPath,
+            createdAt: folderMeta.createdAt,
+          });
+          const saved = await driver.writeSidecar({
+            ...serialized,
+            existingMessageId: entry.messageId,
+          });
+          return {
+            kind: 'folder',
+            path: newPath,
+            createdAt: folderMeta.createdAt,
+            ...saved,
+          };
+        }
+
+        const file = filesById.get(entry.id);
+        if (
+          !file ||
+          (file.folder !== sourcePath && !file.folder.startsWith(`${sourcePath}/`))
+        ) {
+          return entry;
+        }
+
+        const renamedFile: StoredFile = {
+          ...file,
+          folder: renamePath(file.folder),
+          updatedAt: now,
+        };
+        const serialized = serializeFileSidecar(renamedFile);
+        const saved = await driver.writeSidecar({
+          ...serialized,
+          existingMessageId: entry.messageId,
+        });
+        return {
+          kind: 'file',
+          id: renamedFile.id,
+          meta: toEmbeddedFileMeta(renamedFile),
+          ...saved,
+        };
+      },
+    );
+
+    const finalEntries = await ensureAncestorFolderEntries(
+      driver,
+      updatedEntries,
+      [],
+      targetPath,
+      now,
+    );
+
+    await driver.writeDirectory(
+      {
+        schema: 'tellynas.directory.v1',
+        updatedAt: now,
+        entries: finalEntries,
+      },
+      directoryMessageId,
+    );
+
+    return { ok: true, path: targetPath };
+  });
+}
+
+export async function deleteStoredFolder(pathInput: unknown): Promise<{
+  removedFiles: number;
+  removedBytes: number;
+}> {
+  return runExclusive(async () => {
+    const targetPath = normalizeFolder(pathInput);
+    const driver = getDriver();
+    const { index, directory, directoryMessageId } = await scanDriverStorage(driver, {
+      freshRead: true,
+    });
+
+    const doomedFiles = index.files.filter(
+      (file) => file.folder === targetPath || file.folder.startsWith(`${targetPath}/`),
+    );
+    const doomedFileIds = new Set(doomedFiles.map((file) => file.id));
+
+    const removedEntries: DirectoryEntry[] = [];
+    const remainingEntries: DirectoryEntry[] = [];
+
+    for (const entry of directory.entries) {
+      const isDoomedFolder =
+        entry.kind === 'folder' &&
+        (entry.path === targetPath || entry.path.startsWith(`${targetPath}/`));
+      const isDoomedFile = entry.kind === 'file' && doomedFileIds.has(entry.id);
+
+      if (isDoomedFolder || isDoomedFile) {
+        removedEntries.push(entry);
+      } else {
+        remainingEntries.push(entry);
+      }
+    }
+
+    const messageIds = [
+      ...removedEntries.map((entry) => entry.messageId),
+      ...doomedFiles.flatMap((file) => file.chunks.map((chunk) => chunk.messageId)),
+    ];
+
+    await Promise.all([
+      driver.writeDirectory(
+        {
+          schema: 'tellynas.directory.v1',
+          updatedAt: Date.now(),
+          entries: remainingEntries,
+        },
+        directoryMessageId,
+      ),
+      messageIds.length > 0 ? driver.deleteMessages(messageIds) : Promise.resolve(),
+    ]);
+
+    return {
+      removedFiles: doomedFiles.length,
+      removedBytes: doomedFiles.reduce((sum, file) => sum + file.size, 0),
+    };
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -293,7 +1132,6 @@ export function filesInFolder(index: StorageIndex, folder: string): StoredFile[]
     .sort((a, b) => b.createdAt - a.createdAt);
 }
 
-/** Immediate child folders of `folder`, with file counts. */
 export function childFolders(
   index: StorageIndex,
   folder: string,
@@ -301,9 +1139,9 @@ export function childFolders(
   const prefix = folder ? `${folder}/` : '';
   const seen = new Map<string, number>();
 
-  const register = (path: string) => {
-    if (!path.startsWith(prefix) || path === folder) return;
-    const segment = path.slice(prefix.length).split('/')[0];
+  const register = (folderPath: string) => {
+    if (!folderPath.startsWith(prefix) || folderPath === folder) return;
+    const segment = folderPath.slice(prefix.length).split('/')[0];
     if (!segment) return;
     seen.set(segment, (seen.get(segment) || 0) + 1);
   };
@@ -332,11 +1170,4 @@ export function computeStats(index: StorageIndex): StorageStats {
     totalBytes: index.files.reduce((sum, file) => sum + file.size, 0),
     chunkCount: index.files.reduce((sum, file) => sum + file.chunks.length, 0),
   };
-}
-
-export function indexFingerprint(index: StorageIndex): string {
-  return `${index.files.length}:${index.folders.length}:${index.files.reduce(
-    (sum, file) => sum + file.updatedAt,
-    0,
-  )}`;
 }

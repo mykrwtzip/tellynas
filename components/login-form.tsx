@@ -118,7 +118,7 @@ export function LoginForm({ next, runtime }: Props) {
           <ShieldAlert className="mt-0.5 size-4 shrink-0" />
           <span>
             Running on default credentials (<strong>{runtime.defaultUsername}</strong> /{' '}
-            <strong>changeme</strong>). Set <code>APP_PASSWORD</code> before sharing this
+            <strong>changeme</strong>). Change the default password before sharing this
             deployment.
           </span>
         </div>
@@ -126,8 +126,8 @@ export function LoginForm({ next, runtime }: Props) {
 
       <p className="pt-1 text-center text-[11px] text-muted">
         {runtime.demo
-          ? 'Demo mode — uploads stay in server memory until Telegram is configured.'
-          : 'Files are uploaded to your private Telegram chat.'}
+          ? 'Demo workspace — files are temporary until cloud storage is connected.'
+          : 'Sign in from any device to access your library.'}
       </p>
     </form>
   );

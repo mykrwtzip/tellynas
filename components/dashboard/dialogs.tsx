@@ -177,7 +177,7 @@ export function ConfirmDialog({
     >
       {details ?? (
         <p className="text-[13px] leading-relaxed text-muted">
-          This removes the Telegram messages that hold the data. It cannot be undone.
+          This permanently deletes the selected item and cannot be undone.
         </p>
       )}
     </Modal>
@@ -275,8 +275,6 @@ export function SettingsDialog({
   onClose,
   system,
   sessionUsername,
-  indexBackend,
-  indexPersistent,
   stats,
   onRefreshSystem,
   onLogout,
@@ -285,8 +283,6 @@ export function SettingsDialog({
   onClose: () => void;
   system: SystemInfo | null;
   sessionUsername: string | null;
-  indexBackend: string;
-  indexPersistent: boolean;
   stats: { fileCount: number; folderCount: number; totalBytes: number; chunkCount: number };
   onRefreshSystem: () => void;
   onLogout: () => void;
@@ -302,18 +298,18 @@ export function SettingsDialog({
   const rows = [
     {
       icon: <Server className="size-4" />,
-      label: 'Storage driver',
-      value: system ? (system.demo ? 'Demo (memory)' : 'Telegram Bot API') : 'Checking…',
+      label: 'Cloud storage',
+      value: system ? (system.demo ? 'Demo workspace' : 'Connected') : 'Checking…',
     },
     {
       icon: <HardDrive className="size-4" />,
-      label: 'Index backend',
-      value: indexPersistent ? indexBackend : `${indexBackend} (volatile)`,
+      label: 'Sync across devices',
+      value: system ? (system.persistent ? 'Automatic' : 'Temporary (demo)') : '—',
     },
     {
       icon: <Info className="size-4" />,
-      label: 'Chunk size',
-      value: system ? `${system.chunkSizeMb} MB per Telegram message` : '—',
+      label: 'Total stored',
+      value: formatBytes(stats.totalBytes),
     },
   ];
 
@@ -322,7 +318,7 @@ export function SettingsDialog({
       open={open}
       onClose={onClose}
       title="Settings"
-      description="Connection, appearance and account."
+      description="Storage status, appearance and account."
       size="md"
       footer={
         <>
@@ -347,7 +343,7 @@ export function SettingsDialog({
       <div className="space-y-5">
         <section>
           <h3 className="mb-2 text-[11px] font-semibold tracking-[0.1em] text-muted uppercase">
-            Connection
+            Storage
           </h3>
           <div className="divide-y divide-[var(--border-subtle)] overflow-hidden rounded-xl border border-line bg-surface-2/50">
             {rows.map((row) => (
@@ -372,31 +368,22 @@ export function SettingsDialog({
               <div className="flex-1">
                 <p className="text-[12.5px] text-fg-soft">Status</p>
                 <p className="mt-0.5 text-[12px] leading-relaxed text-muted">
-                  {system?.connection.detail ?? 'Checking the Telegram connection…'}
+                  {system
+                    ? system.connection.ok
+                      ? 'Your cloud storage is online and synced.'
+                      : system.demo
+                        ? 'Running in demo mode. Connect cloud storage in your server environment to keep files permanently.'
+                        : system.connection.detail
+                    : 'Checking your storage connection…'}
                 </p>
               </div>
             </div>
           </div>
 
-          {system && system.missingEnv.length > 0 && (
-            <div className="mt-2 rounded-xl border border-warning/25 bg-warning/10 px-3.5 py-2.5 text-[12px] leading-relaxed text-warning">
-              Missing environment variables:{' '}
-              <code className="font-mono">{system.missingEnv.join(', ')}</code>. Uploads are
-              simulated in memory until they are set.
-            </div>
-          )}
-          {!indexPersistent && (
-            <div className="mt-2 rounded-xl border border-warning/25 bg-warning/10 px-3.5 py-2.5 text-[12px] leading-relaxed text-warning">
-              The file index is not persistent on this host (read-only serverless disk).
-              Uploads work, but the list resets when the instance restarts. Set{' '}
-              <code className="font-mono">UPSTASH_REDIS_REST_URL</code> and{' '}
-              <code className="font-mono">UPSTASH_REDIS_REST_TOKEN</code> to keep it.
-            </div>
-          )}
           {system?.usingDefaultPassword && (
             <div className="mt-2 rounded-xl border border-danger/25 bg-danger-soft px-3.5 py-2.5 text-[12px] leading-relaxed text-danger">
-              Default password in use. Set <code className="font-mono">APP_PASSWORD</code> and{' '}
-              <code className="font-mono">AUTH_SECRET</code> for a secure deployment.
+              Default password is still active. Update your account password before sharing
+              this deployment.
             </div>
           )}
         </section>
@@ -440,7 +427,6 @@ export function SettingsDialog({
             <Badge tone="neutral">{stats.fileCount} files</Badge>
             <Badge tone="neutral">{stats.folderCount} folders</Badge>
             <Badge tone="neutral">{formatBytes(stats.totalBytes)} stored</Badge>
-            <Badge tone="neutral">{stats.chunkCount} Telegram messages</Badge>
           </div>
         </section>
       </div>

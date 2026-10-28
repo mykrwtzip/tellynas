@@ -18,7 +18,7 @@ const serverless = Boolean(
 
 /**
  * Vercel rejects request bodies above 4.5 MB before the handler runs, so the
- * chunk size is capped there unless the operator deliberately overrides it.
+ * chunk size is capped there unless running on a standard server.
  */
 const DEFAULT_CHUNK_MB = serverless ? 4 : 8;
 const rawChunkMb = num(process.env.TELEGRAM_CHUNK_MB, DEFAULT_CHUNK_MB);
@@ -38,9 +38,6 @@ export const appConfig = {
   chunkSize: maxChunkMb * 1024 * 1024,
   /** Host without a writable, persistent filesystem. */
   serverless,
-  /** Optional Upstash Redis REST credentials for the file index. */
-  redisUrl: process.env.UPSTASH_REDIS_REST_URL || '',
-  redisToken: process.env.UPSTASH_REDIS_REST_TOKEN || '',
 };
 
 export const isTelegramConfigured = () =>

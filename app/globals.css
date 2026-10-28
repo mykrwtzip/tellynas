@@ -89,36 +89,21 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* Ambient background glow used by both the login screen and the app shell. */
+button:not(:disabled),
+[role='button']:not([aria-disabled='true']) {
+  cursor: pointer;
+}
+
+/* Ambient background glow — pure radial gradients avoid expensive GPU Gaussian blur passes. */
 .ambient {
   position: fixed;
   inset: 0;
   z-index: -1;
   overflow: hidden;
   pointer-events: none;
-}
-
-.ambient::before,
-.ambient::after {
-  content: '';
-  position: absolute;
-  width: 46rem;
-  height: 46rem;
-  border-radius: 9999px;
-  filter: blur(120px);
-  opacity: 0.75;
-}
-
-.ambient::before {
-  background: var(--bg-glow-a);
-  top: -18rem;
-  left: -12rem;
-}
-
-.ambient::after {
-  background: var(--bg-glow-b);
-  bottom: -22rem;
-  right: -14rem;
+  background:
+    radial-gradient(38rem circle at 8% -6%, var(--bg-glow-a), transparent 70%),
+    radial-gradient(40rem circle at 92% 106%, var(--bg-glow-b), transparent 70%);
 }
 
 ::selection {
@@ -192,15 +177,15 @@ body {
 }
 
 .animate-fade-in {
-  animation: fade-in 0.2s ease-out both;
+  animation: fade-in 0.14s ease-out both;
 }
 
 .animate-pop-in {
-  animation: pop-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: pop-in 0.14s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .animate-slide-up {
-  animation: slide-up 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: slide-up 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .skeleton {

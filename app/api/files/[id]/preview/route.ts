@@ -1,6 +1,6 @@
-import { jsonError, requireSession } from '@/lib/api';
+import { jsonError, requireSession, withApiGuard } from '@/lib/api';
 import { getDriver } from '@/lib/driver';
-import { getIndex } from '@/lib/store';
+import { getStoredFile } from '@/lib/store';
 import { createStoredFileStream, parseRangeHeader } from '@/lib/stream';
 
 export const runtime = 'nodejs';
@@ -15,37 +15,53 @@ export async function GET(request: Request, context: RouteContext) {
   const unauthorized = await requireSession();
   if (unauthorized) return unauthorized;
 
-  const { id } = await context.params;
-  const index = await getIndex();
-  const file = index.files.find((entry) => entry.id === id);
-  if (!file) return jsonError('File not found.', 404);
+  return withApiGuard(async () => {
+    const { id } = await context.params;
+    const file = await getStoredFile(id);
+    if (!file) return jsonError('File not found.', 404);
 
-  const driver = getDriver();
-  const fetchChunk = (fileId: string) => driver.getChunkStream(fileId);
-  const baseHeaders: Record<string, string> = {
-    'Content-Type': TEXT_KINDS.test(file.mime)
-      ? `${file.mime.split(';')[0]}; charset=utf-8`
-      : file.mime || 'application/octet-stream',
-    'Content-Disposition': 'inline',
-    'Cache-Control': 'private, max-age=300',
-    'Accept-Ranges': 'bytes',
-  };
+    const etag = `"${file.id}-${file.updatedAt}"`;
+    if (
+      !request.headers.get('range') &&
+      request.headers.get('if-none-match') === etag
+    ) {
+      return new Response(null, {
+        status: 304,
+        headers: {
+          ETag: etag,
+          'Cache-Control': 'private, max-age=3600',
+        },
+      });
+    }
 
-  const range = parseRangeHeader(request.headers.get('range'), file.size);
-  if (range) {
-    const stream = createStoredFileStream(file.chunks, fetchChunk, range);
+    const driver = getDriver();
+    const fetchChunk = (fileId: string) => driver.getChunkStream(fileId);
+    const baseHeaders: Record<string, string> = {
+      'Content-Type': TEXT_KINDS.test(file.mime)
+        ? `${file.mime.split(';')[0]}; charset=utf-8`
+        : file.mime || 'application/octet-stream',
+      'Content-Disposition': 'inline',
+      'Cache-Control': 'private, max-age=3600',
+      ETag: etag,
+      'Accept-Ranges': 'bytes',
+    };
+
+    const range = parseRangeHeader(request.headers.get('range'), file.size);
+    if (range) {
+      const stream = createStoredFileStream(file.chunks, fetchChunk, range);
+      return new Response(stream, {
+        status: 206,
+        headers: {
+          ...baseHeaders,
+          'Content-Range': `bytes ${range.start}-${range.end}/${file.size}`,
+          'Content-Length': String(range.end - range.start + 1),
+        },
+      });
+    }
+
+    const stream = createStoredFileStream(file.chunks, fetchChunk);
     return new Response(stream, {
-      status: 206,
-      headers: {
-        ...baseHeaders,
-        'Content-Range': `bytes ${range.start}-${range.end}/${file.size}`,
-        'Content-Length': String(range.end - range.start + 1),
-      },
+      headers: { ...baseHeaders, 'Content-Length': String(file.size) },
     });
-  }
-
-  const stream = createStoredFileStream(file.chunks, fetchChunk);
-  return new Response(stream, {
-    headers: { ...baseHeaders, 'Content-Length': String(file.size) },
   });
 }
