@@ -1,6 +1,9 @@
 /**
  * Stateless session auth built on a signed (HMAC-SHA256) cookie.
- * Uses Web Crypto so the same helpers run in route handlers and middleware.
+ *
+ * Deliberately dependency-free: no `atob` / `btoa`, no Node `Buffer`, only
+ * `globalThis.crypto` (available in Node 18+, Edge, and browsers) so the exact
+ * same helpers work in route handlers and server components.
  */
 
 import { appConfig } from './config';
@@ -14,26 +17,61 @@ type SessionPayload = {
   exp: number;
 };
 
-const encoder = new TextEncoder();
+const ALPHABET =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
-function toBase64Url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+/** Base64url (RFC 4648 §5) without any runtime base64 helpers. */
+export function toBase64Url(bytes: Uint8Array): string {
+  let output = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = bytes[i + 1];
+    const b2 = bytes[i + 2];
+
+    output += ALPHABET[b0 >> 2];
+    output += ALPHABET[((b0 & 0b11) << 4) | ((b1 ?? 0) >> 4)];
+    if (b1 === undefined) break;
+    output += ALPHABET[((b1 & 0b1111) << 2) | ((b2 ?? 0) >> 6)];
+    if (b2 === undefined) break;
+    output += ALPHABET[b2 & 0b111111];
+  }
+  return output;
 }
 
-function fromBase64Url(value: string): Uint8Array {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized.padEnd(
-    normalized.length + ((4 - (normalized.length % 4)) % 4),
-    '=',
-  );
-  const binary = atob(padded);
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+export function fromBase64Url(value: string): Uint8Array {
+  const clean = value.replace(/=+$/, '');
+  const bytes: number[] = [];
+  let buffer = 0;
+  let bits = 0;
+
+  for (const char of clean) {
+    const index = ALPHABET.indexOf(char);
+    if (index === -1) throw new Error('Invalid base64url input');
+    buffer = (buffer << 6) | index;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((buffer >> bits) & 0xff);
+    }
+  }
+  return Uint8Array.from(bytes);
+}
+
+function getCrypto(): Crypto {
+  const crypto = globalThis.crypto;
+  if (!crypto?.subtle) {
+    throw new Error(
+      'Web Crypto is unavailable. Node.js 18+ (or an Edge runtime) is required.',
+    );
+  }
+  return crypto;
 }
 
 async function getKey(): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
+  return getCrypto().subtle.importKey(
     'raw',
     encoder.encode(appConfig.authSecret),
     { name: 'HMAC', hash: 'SHA-256' },
@@ -43,8 +81,11 @@ async function getKey(): Promise<CryptoKey> {
 }
 
 async function sign(data: string): Promise<Uint8Array> {
-  const key = await getKey();
-  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(data));
+  const signature = await getCrypto().subtle.sign(
+    'HMAC',
+    await getKey(),
+    encoder.encode(data),
+  );
   return new Uint8Array(signature);
 }
 
@@ -71,16 +112,16 @@ export async function verifySessionToken(
     const expected = await sign(body);
     const provided = fromBase64Url(signature);
     if (expected.length !== provided.length) return null;
+
     let diff = 0;
     for (let i = 0; i < expected.length; i += 1) diff |= expected[i] ^ provided[i];
     if (diff !== 0) return null;
 
-    const payload = JSON.parse(
-      new TextDecoder().decode(fromBase64Url(body)),
-    ) as SessionPayload;
+    const payload = JSON.parse(decoder.decode(fromBase64Url(body))) as SessionPayload;
     if (!payload?.exp || payload.exp * 1000 < Date.now()) return null;
     return payload;
   } catch {
+    // Malformed cookie, missing secret, unavailable crypto — all mean "no session".
     return null;
   }
 }
