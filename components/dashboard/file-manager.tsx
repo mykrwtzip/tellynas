@@ -20,6 +20,7 @@ import {
   MoreHorizontal,
   PanelRight,
   RefreshCw,
+  RotateCcw,
   Search,
   SlidersHorizontal,
   Star,
@@ -71,6 +72,7 @@ const VIEW_LABELS: Record<LibraryView, string> = {
   all: 'All files',
   recent: 'Recent',
   starred: 'Starred',
+  archive: 'Archive',
   images: 'Images',
   videos: 'Videos',
   audio: 'Audio',
@@ -108,6 +110,9 @@ export function FileManager({ username, runtime }: Props) {
   const [commandOpen, setCommandOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [archivedFiles, setArchivedFiles] = useState<StoredFile[]>([]);
+  const [shares, setShares] = useState<Awaited<ReturnType<typeof api.shares>>>([]);
+  const [shareBusy, setShareBusy] = useState(false);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [draggingExternal, setDraggingExternal] = useState(false);
   const [crumbDropTarget, setCrumbDropTarget] = useState<string | null>(null);
@@ -157,6 +162,20 @@ export function FileManager({ username, runtime }: Props) {
 
   const baseFiles = useMemo(() => {
     const search = debouncedQuery.trim().toLowerCase();
+
+    if (view === 'archive') {
+      let list = [...archivedFiles].sort(
+        (a, b) => (b.deletedAt || 0) - (a.deletedAt || 0),
+      );
+      if (search) {
+        list = list.filter(
+          (file) =>
+            file.name.toLowerCase().includes(search) ||
+            file.folder.toLowerCase().includes(search),
+        );
+      }
+      return list;
+    }
 
     if (search) {
       return library.files.filter(
@@ -227,6 +246,39 @@ export function FileManager({ username, runtime }: Props) {
     return null;
   }, [inspectedId, library.files, selection]);
 
+  const currentShare = useMemo(() => {
+    if (!inspectedFile) return null;
+    return shares.find((entry) => entry.file.id === inspectedFile.id) ?? null;
+  }, [inspectedFile, shares]);
+
+  const handleCreateShare = async (expiresAt?: number) => {
+    if (!inspectedFile) return;
+    setShareBusy(true);
+    try {
+      await api.createShare(inspectedFile.id, { expiresAt });
+      const updated = await api.shares();
+      setShares(updated);
+      toast.success('Share link created');
+    } catch (error) {
+      toast.error('Could not create share link', (error as Error).message);
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const handleRevokeShare = async (token: string) => {
+    setShareBusy(true);
+    try {
+      await api.revokeShare(token);
+      setShares(shares.filter((entry) => entry.share.token !== token));
+      toast.success('Share link revoked');
+    } catch (error) {
+      toast.error('Could not revoke link', (error as Error).message);
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
   /* -------------------------------- uploads -------------------------------- */
 
   const handleUploaded = useCallback(
@@ -248,7 +300,21 @@ export function FileManager({ username, runtime }: Props) {
     chunkSize: runtime.chunkSize,
     onUploaded: handleUploaded,
     onError: handleUploadError,
+    maxConcurrent: Math.min(6, runtime.botCount * 2 || 6),
+    chunkConcurrency: Math.min(8, runtime.botCount * 4 || 8),
   });
+
+  // Load the Archive when the user opens it.
+  useEffect(() => {
+    if (view === 'archive') {
+      void api.listArchived().then((data) => setArchivedFiles(data.files));
+    }
+  }, [view]);
+
+  // Load public share links so the inspector can show/revoke them.
+  useEffect(() => {
+    void api.shares().then(setShares).catch(() => undefined);
+  }, []);
 
   const targetUploadFolder = view === 'all' ? folder : '';
 
@@ -472,23 +538,34 @@ export function FileManager({ username, runtime }: Props) {
     if (!deleteTarget) return;
     const target = deleteTarget;
     const previous = library.snapshot();
+    const forever = view === 'archive';
     setDeleteTarget(null);
 
     try {
       if (target.type === 'file') {
         library.removeFilesLocal([target.file.id]);
         if (inspectedId === target.file.id) setInspectedId(null);
-        toast.success('Deleted file', target.file.name);
-        await api.deleteFile(target.file.id);
+        toast.success(forever ? 'Deleted forever' : 'Moved to Archive', target.file.name);
+        if (forever) {
+          await api.deleteFile(target.file.id, { purge: true });
+        } else {
+          await api.deleteFile(target.file.id);
+        }
       } else if (target.type === 'selection') {
         const ids = target.files.map((file) => file.id);
         library.removeFilesLocal(ids);
         setSelection(new Set());
         toast.success(
-          `Deleted ${target.files.length} files`,
+          forever
+            ? `Deleted ${target.files.length} files forever`
+            : `Moved ${target.files.length} files to Archive`,
           formatBytes(target.files.reduce((sum, file) => sum + file.size, 0)),
         );
-        await api.deleteFiles(ids);
+        if (forever) {
+          await api.deleteFiles(ids, { purge: true });
+        } else {
+          await api.deleteFiles(ids);
+        }
       } else {
         const previousActiveFolder = folder;
         library.removeFolderLocal(target.path);
@@ -496,7 +573,7 @@ export function FileManager({ username, runtime }: Props) {
           const parent = target.path.split('/').slice(0, -1).join('/');
           setFolder(parent);
         }
-        toast.success('Deleted folder', `${target.files} files removed`);
+        toast.success('Deleted folder', `${target.files} files moved to Archive`);
         try {
           await api.deleteFolder(target.path);
         } catch (err) {
@@ -507,6 +584,41 @@ export function FileManager({ username, runtime }: Props) {
     } catch (error) {
       library.restore(previous);
       toast.error('Delete failed', (error as Error).message);
+    }
+  };
+
+  const restoreFile = async (file: StoredFile) => {
+    const previous = library.snapshot();
+    library.patchFileLocal(file.id, { archived: false });
+    setArchivedFiles((current) => current.filter((item) => item.id !== file.id));
+    toast.success('Restored', file.name);
+
+    try {
+      const { file: updated } = await api.patchFile(file.id, { archived: false });
+      library.upsertFile(updated);
+      setArchivedFiles((current) => current.filter((item) => item.id !== file.id));
+    } catch (error) {
+      library.restore(previous);
+      void api.listArchived().then((data) => setArchivedFiles(data.files));
+      toast.error('Could not restore file', (error as Error).message);
+    }
+  };
+
+  const restoreSelection = async () => {
+    const files = selectedFiles;
+    if (files.length === 0) return;
+    const previous = library.snapshot();
+    for (const item of files) library.patchFileLocal(item.id, { archived: false });
+    setSelection(new Set());
+    setArchivedFiles((current) => current.filter((item) => !files.some((f) => f.id === item.id)));
+    toast.success(`Restored ${files.length} files`);
+
+    try {
+      await Promise.all(files.map((item) => api.patchFile(item.id, { archived: false })));
+    } catch (error) {
+      library.restore(previous);
+      void api.listArchived().then((data) => setArchivedFiles(data.files));
+      toast.error('Could not restore files', (error as Error).message);
     }
   };
 
@@ -682,6 +794,7 @@ export function FileManager({ username, runtime }: Props) {
       ensureNoDialog();
       setDeleteTarget({ type: 'file', file });
     },
+    onRestore: restoreFile,
     onToggleSelect: toggleSelect,
     onNavigateFolder: navigateFolder,
     onContextMenu: openContextMenu,
@@ -824,6 +937,7 @@ export function FileManager({ username, runtime }: Props) {
           folders={folderNodes}
           stats={library.stats}
           starredCount={starredCount}
+          archivedCount={archivedFiles.length}
           demo={runtime.demo}
           username={username}
           onNavigateView={navigateView}
@@ -854,6 +968,7 @@ export function FileManager({ username, runtime }: Props) {
               folders={folderNodes}
               stats={library.stats}
               starredCount={starredCount}
+              archivedCount={archivedFiles.length}
               demo={runtime.demo}
               username={username}
               onNavigateView={navigateView}
@@ -1273,10 +1388,12 @@ export function FileManager({ username, runtime }: Props) {
                     )}
                   </div>
                   <p className="mt-3.5 text-[14px] font-medium text-fg">
-                    {debouncedQuery
-                      ? 'No matching files'
-                      : view === 'starred'
-                        ? 'No starred files yet'
+                  {debouncedQuery
+                    ? 'No matching files'
+                    : view === 'starred'
+                      ? 'No starred files yet'
+                      : view === 'archive'
+                        ? 'No archived files yet'
                         : MEDIA_VIEWS.has(view)
                           ? `No ${VIEW_LABELS[view].toLowerCase()} yet`
                           : 'This folder is empty'}
@@ -1454,17 +1571,41 @@ export function FileManager({ username, runtime }: Props) {
                 Download
               </Button>
 
-              <Button
-                size="sm"
-                variant="danger"
-                icon={<Trash2 className="size-3.5" />}
-                onClick={() => {
-                  ensureNoDialog();
-                  setDeleteTarget({ type: 'selection', files: selectedFiles });
-                }}
-              >
-                Delete
-              </Button>
+              {view === 'archive' ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    icon={<RotateCcw className="size-3.5" />}
+                    onClick={restoreSelection}
+                  >
+                    Restore
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    icon={<Trash2 className="size-3.5" />}
+                    onClick={() => {
+                      ensureNoDialog();
+                      setDeleteTarget({ type: 'selection', files: selectedFiles });
+                    }}
+                  >
+                    Delete forever
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="danger"
+                  icon={<Trash2 className="size-3.5" />}
+                  onClick={() => {
+                    ensureNoDialog();
+                    setDeleteTarget({ type: 'selection', files: selectedFiles });
+                  }}
+                >
+                  Delete
+                </Button>
+              )}
 
               <IconButton
                 label="Clear selection"
@@ -1520,6 +1661,19 @@ export function FileManager({ username, runtime }: Props) {
                 ensureNoDialog();
                 setDeleteTarget({ type: 'file', file });
               }}
+              onRestore={restoreFile}
+              share={
+                currentShare
+                  ? {
+                      token: currentShare.share.token,
+                      downloadUrl: currentShare.downloadUrl,
+                      expiresAt: currentShare.share.expiresAt,
+                    }
+                  : null
+              }
+              onCreateShare={handleCreateShare}
+              onRevokeShare={handleRevokeShare}
+              shareBusy={shareBusy}
               onNavigateFolder={navigateFolder}
             />
           </div>
@@ -1551,7 +1705,20 @@ export function FileManager({ username, runtime }: Props) {
                   ensureNoDialog();
                   setDeleteTarget({ type: 'file', file });
                 }}
-                onNavigateFolder={navigateFolder}
+                onRestore={restoreFile}
+              share={
+                currentShare
+                  ? {
+                      token: currentShare.share.token,
+                      downloadUrl: currentShare.downloadUrl,
+                      expiresAt: currentShare.share.expiresAt,
+                    }
+                  : null
+              }
+              onCreateShare={handleCreateShare}
+              onRevokeShare={handleRevokeShare}
+              shareBusy={shareBusy}
+              onNavigateFolder={navigateFolder}
               />
             </div>
           </div>
@@ -1687,8 +1854,20 @@ export function FileManager({ username, runtime }: Props) {
               ? 'Delete selected files?'
               : 'Delete file?'
         }
-        description="This permanently deletes the selected items and cannot be undone."
-        confirmLabel={busy ? 'Deleting…' : 'Delete'}
+        description={
+          view === 'archive'
+            ? 'This permanently deletes the selected items and cannot be undone.'
+            : deleteTarget?.type === 'selection'
+              ? 'These items will be moved to Archive. They can be restored or permanently deleted later.'
+              : 'This item will be moved to Archive. It can be restored or permanently deleted later.'
+        }
+        confirmLabel={
+          busy
+            ? 'Deleting…'
+            : view === 'archive'
+              ? 'Delete forever'
+              : 'Delete'
+        }
         busy={busy}
         details={deleteDetails}
         onConfirm={confirmDelete}

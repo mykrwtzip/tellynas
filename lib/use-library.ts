@@ -7,7 +7,7 @@ import type { StorageStats, StoredFile } from './types';
 
 export type FolderEntry = { path: string; createdAt: number };
 
-export type LibraryView = 'all' | 'recent' | 'starred' | MediaCategory;
+export type LibraryView = 'all' | 'recent' | 'starred' | 'archive' | MediaCategory;
 
 export type LibraryState = {
   files: StoredFile[];

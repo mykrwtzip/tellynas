@@ -1,11 +1,14 @@
 export type StoredChunk = {
-  /** Position of the chunk in the file (0-based). */
-  index: number;
-  /** Telegram message id that holds the document (or simulated id in demo mode). */
-  messageId: number;
-  /** Storage file_id used to stream chunk bytes. */
-  fileId: string;
+  /** Position of the chunk in the file (0-based). */ index: number;
+  /** Telegram message id that holds the document (or simulated id in demo mode). */ messageId: number;
+  /** Storage file_id used to stream chunk bytes. */ fileId: string;
   size: number;
+  /**
+   * Index of the bot in the bot pool that stored this chunk. Downloads must
+   * fetch the chunk through the same bot token because the Bot API only serves
+   * a file to a bot that knows its file_id.
+   */
+  botIndex?: number;
 };
 
 export type StoredFile = {
@@ -13,13 +16,15 @@ export type StoredFile = {
   name: string;
   size: number;
   mime: string;
-  /** "" for the root folder, or a slash-separated path such as "media/2024". */
-  folder: string;
+  /** "" for the root folder, or a slash-separated path such as "media/2024". */ folder: string;
   chunks: StoredChunk[];
   createdAt: number;
   updatedAt: number;
   starred: boolean;
+  /** Soft-deleted files live in the Archive instead of being purged. */ archived: boolean;
+  /** When the file was moved to the Archive (epoch ms). */ deletedAt?: number;
 };
+
 
 export type StoredFolder = {
   path: string;
@@ -39,6 +44,15 @@ export type StorageStats = {
   chunkCount: number;
 };
 
+/** A public share link: a token that anyone can use to download a file. */
+export type StorageShare = {
+  /** Unguessable token embedded in the public share URL. */ token: string;
+  /** Id of the shared file. */ targetId: string;
+  /** When the share was created (epoch ms). */ createdAt: number;
+  /** Optional expiry (epoch ms). After this the link stops working. */ expiresAt?: number;
+};
+
+
 export type FileSidecarRecord = {
   schema: 'tellynas.file.v1';
   id: string;
@@ -47,6 +61,8 @@ export type FileSidecarRecord = {
   mime: string;
   folder: string;
   starred: boolean;
+  archived: boolean;
+  deletedAt?: number;
   createdAt: number;
   updatedAt: number;
   chunks: StoredChunk[];
@@ -72,6 +88,8 @@ export type EmbeddedFileMeta = {
   mime: string;
   folder: string;
   starred: boolean;
+  archived: boolean;
+  deletedAt?: number;
   createdAt: number;
   updatedAt: number;
   chunks: StoredChunk[];
@@ -87,7 +105,14 @@ export type DirectoryEntry =
       kind: 'folder';
       path: string;
       createdAt?: number;
-    } & StoredObjectRef);
+    } & StoredObjectRef)
+  | ({
+      kind: 'share';
+      /** Public share token. */ token: string;
+      /** Id of the file the link points to. */ targetId: string;
+      /** When the link was created (epoch ms). */ createdAt?: number;
+      /** Optional expiry (epoch ms). */ expiresAt?: number;
+    } & StoredObjectRef)
 
 export type StorageDirectory = {
   schema: 'tellynas.directory.v1';
@@ -124,6 +149,7 @@ export interface StorageDriver {
     messageId: number | null;
     standaloneSidecar?: SidecarRecord | null;
   }>;
+  getChunkStream(fileId: string, botIndex?: number): Promise<ChunkStream>;
   writeDirectory(
     directory: StorageDirectory,
     existingMessageId?: number | null,

@@ -17,15 +17,29 @@ const serverless = Boolean(
 );
 
 /**
- * Vercel rejects request bodies above 4.5 MB before the handler runs, so the
- * chunk size is capped there unless running on a standard server.
+ * Telegram Bot API serves individual documents up to 20 MB, so chunks stay
+ * below that ceiling. Bigger chunks = fewer API round-trips = faster uploads
+ * and downloads (up to 19 MB to stay safely under the limit).
  */
 const DEFAULT_CHUNK_MB = serverless ? 4 : 8;
 const rawChunkMb = num(process.env.TELEGRAM_CHUNK_MB, DEFAULT_CHUNK_MB);
 const maxChunkMb = serverless ? Math.min(rawChunkMb, 4) : Math.min(rawChunkMb, 19);
 
+/**
+ * Multiple bots can share one storage chat. Comma-separated list in
+ * TELEGRAM_BOT_TOKENS, falling back to a single TELEGRAM_BOT_TOKEN. Chunks are
+ * round-robined across the pool so uploads/downloads run in parallel across
+ * bots instead of being funneled through a single bot (and its rate limits).
+ * All bots must be members of TELEGRAM_CHAT_ID (start each bot in a private
+ * chat, or add it to the group/channel and grant send/pin rights).
+ */
+const botTokens = (process.env.TELEGRAM_BOT_TOKENS || process.env.TELEGRAM_BOT_TOKEN || '')
+  .split(',')
+  .map((token) => token.trim())
+  .filter(Boolean);
+
 export const appConfig = {
-  telegramToken: (process.env.TELEGRAM_BOT_TOKEN || '').trim(),
+  telegramToken: botTokens[0] ?? '',
   telegramChatId: (process.env.TELEGRAM_CHAT_ID || '').trim(),
   appUsername: (process.env.APP_USERNAME || 'admin').trim(),
   appPassword: process.env.APP_PASSWORD || 'changeme',
@@ -34,6 +48,8 @@ export const appConfig = {
     `${process.env.APP_PASSWORD || 'changeme'}::tellynas::session`,
   /** Enable the in-memory demo driver (simulated storage, no Telegram needed). */
   demoMode: truthy(process.env.DEMO_MODE),
+  /** All configured bot tokens (deduplicated, at least one required for Telegram mode). */
+  botTokens,
   /** Max bytes sent to Telegram per chunk. getFile() only works up to 20 MB. */
   chunkSize: maxChunkMb * 1024 * 1024,
   /** Host without a writable, persistent filesystem. */
@@ -61,6 +77,7 @@ export const publicRuntimeConfig = () => ({
   telegramConfigured: isTelegramConfigured(),
   missingEnv: missingEnvVars(),
   chunkSize: appConfig.chunkSize,
+  botCount: appConfig.botTokens.length,
   // Never leak the real password — only whether the default is still in use.
   usingDefaultPassword: appConfig.appPassword === 'changeme',
   defaultUsername: appConfig.appUsername,

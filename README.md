@@ -18,14 +18,23 @@ Built with **Next.js 15 (App Router)**, **React 19**, **TypeScript** and
   live directly in your Telegram chat. Sign in from a new device, redeploy on
   Vercel, or reinstall on a fresh server and your entire library appears
   automatically without re-uploading.
-- **Large file uploads** — files are split into `TELEGRAM_CHUNK_MB` slices and
-  streamed concurrently (2 at a time) with per-file progress, retry, and cancel.
+- **Fast uploads & downloads** — files are split into `TELEGRAM_CHUNK_MB` slices
+  and streamed in parallel (up to 6 files and 8 slices at a time). Configure
+  `TELEGRAM_BOT_TOKENS` with several bots to round-robin chunks across them and
+  multiply throughput; raise `TELEGRAM_CHUNK_MB` (up to 19) for fewer, larger
+  round-trips.
+- **Archive** — deleting a file moves it to the Archive instead of destroying
+  it; restore it anytime, or purge it forever from the Archive view.
+- **Public share links** — create a no-sign-in download link for any file
+  (`/api/share/<token>/download`), optionally with an expiry, and revoke it
+  whenever you like.
 - **Folders, search, sort, views** — nested folders, instant search, starred
   files, recent uploads, and grid/list layouts.
 - **Preview lightbox** — images, video (with HTTP Range requests / seeking),
   audio, PDF, and text/code files, with keyboard navigation.
 - **File actions** — rename, move, star, download, multi-select bulk actions,
-  and delete.
+  and delete (files move to the Archive, where they can be restored or purged
+  forever).
 - **Auth** — single-user login with an HMAC-signed, `httpOnly` session cookie,
   constant-time credential comparison, and a login attempt throttle.
 - **Demo mode** — runs with seeded sample files when Telegram is not configured,
@@ -49,7 +58,8 @@ npm run dev                  # http://localhost:3000
 | `APP_USERNAME` | no | Login user (default `admin`) |
 | `APP_PASSWORD` | **yes** | Login password (default `changeme` — change it) |
 | `AUTH_SECRET` | recommended | Random string used to sign session cookies |
-| `TELEGRAM_CHUNK_MB` | no | Chunk size in MB, `1`–`19` (default `8`; clamped to `4` on serverless hosts) |
+| `TELEGRAM_BOT_TOKENS` | no | Comma-separated bot tokens. Chunks round-robin across all configured bots so uploads and downloads run in parallel (fallback: `TELEGRAM_BOT_TOKEN`). |
+| `TELEGRAM_CHUNK_MB` | no | Chunk size in MB, `1`–`19` (default `8`; clamped to `4` on serverless hosts). Bigger chunks mean fewer API round-trips and faster transfers. |
 | `DEMO_MODE` | no | `true` forces the temporary demo driver |
 
 No Redis, SQL database, or persistent local volume is needed on any host.
@@ -69,6 +79,10 @@ app/
     files/[id]/route.ts            read / rename / move / star / delete via sidecar metadata
     files/[id]/download/route.ts   stream all chunks as one download
     files/[id]/preview/route.ts    inline stream with HTTP Range support
+    files/[id]/share/route.ts      create a public share link for a file
+    share/[token]/route.ts         resolve or revoke a public share link
+    share/[token]/download/route.ts
+                                   public download (no sign-in required)
     folders/route.ts               create / rename / recursive delete folder sidecars
     stats/route.ts                 library counters
     system/route.ts                live storage connection check
@@ -117,9 +131,10 @@ a companion JSON sidecar document directly to the same Telegram chat:
   persist across devices and reinstalls.
 
 Renaming, moving, or starring a file edits its `.tellynas.meta.json` sidecar
-message in-place via `editMessageMedia`. Deleting a file or folder removes both
-the data chunk messages and the corresponding sidecar message(s) via
-`deleteMessage`.
+message in-place via `editMessageMedia`. Deleting a file marks its sidecar
+`archived` and moves it to the Archive (the Telegram messages are kept so it
+can be restored); purging removes the chunk and sidecar messages via
+`deleteMessage` for good.
 
 ### 3. Discovery, scanning, and cross-device recovery
 

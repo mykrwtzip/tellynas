@@ -78,7 +78,7 @@ export function formatFolderSidecarFilename(path: string): string {
   return `${folderSlug(path) || 'root'}${FOLDER_SIDECAR_SUFFIX}`;
 }
 
-function fitCaption(prefix: string, meta: Record<string, unknown>, fallback: string): string {
+export function fitCaption(prefix: string, meta: Record<string, unknown>, fallback: string): string {
   const candidate = `${prefix} ${JSON.stringify(meta)}`;
   if (candidate.length <= CAPTION_LIMIT) return candidate;
   return fallback.slice(0, CAPTION_LIMIT);
@@ -114,6 +114,8 @@ export function toEmbeddedFileMeta(file: StoredFile): EmbeddedFileMeta {
     mime: file.mime,
     folder: file.folder,
     starred: file.starred,
+    archived: file.archived,
+    deletedAt: file.deletedAt,
     createdAt: file.createdAt,
     updatedAt: file.updatedAt,
     chunks: file.chunks.map((chunk) => ({
@@ -245,6 +247,7 @@ function parseEmbeddedFileMeta(raw: unknown): EmbeddedFileMeta | undefined {
   const rawSize = Number(record.size);
   const createdAt = Number(record.createdAt) || Date.now();
   const updatedAt = Number(record.updatedAt) || createdAt;
+  const deletedAt = Number(record.deletedAt) || undefined;
 
   return {
     name,
@@ -255,6 +258,8 @@ function parseEmbeddedFileMeta(raw: unknown): EmbeddedFileMeta | undefined {
         : 'application/octet-stream',
     folder: typeof record.folder === 'string' ? record.folder : '',
     starred: Boolean(record.starred),
+    archived: Boolean(record.archived),
+    deletedAt: deletedAt && deletedAt > createdAt ? deletedAt : undefined,
     createdAt,
     updatedAt,
     chunks,
@@ -356,6 +361,23 @@ export function parseDirectory(raw: string | null | undefined): StorageDirectory
         fileName,
         createdAt: Number(rawEntry.createdAt) || undefined,
       });
+    } else if (
+      rawEntry.kind === 'share' &&
+      typeof rawEntry.token === 'string' &&
+      rawEntry.token &&
+      typeof rawEntry.targetId === 'string' &&
+      rawEntry.targetId
+    ) {
+      entries.push({
+        kind: 'share',
+        token: rawEntry.token,
+        targetId: rawEntry.targetId,
+        messageId,
+        fileId,
+        fileName,
+        createdAt: Number(rawEntry.createdAt) || undefined,
+        expiresAt: Number(rawEntry.expiresAt) || undefined,
+      });
     }
   }
 
@@ -377,5 +399,7 @@ export function sidecarToStoredFile(record: FileSidecarRecord): StoredFile {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     starred: record.starred,
+    archived: Boolean(record.archived),
+    deletedAt: record.deletedAt,
   };
 }

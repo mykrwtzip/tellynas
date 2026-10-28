@@ -24,7 +24,7 @@ const decoder = new TextDecoder();
 /*                               Telegram driver                              */
 /* -------------------------------------------------------------------------- */
 
-const API_BASE = () => `https://api.telegram.org/bot${appConfig.telegramToken}`;
+const API_BASE = (token: string) => `https://api.telegram.org/bot${token}`;
 
 export class TelegramError extends Error {
   status: number;
@@ -59,13 +59,14 @@ type TelegramChatInfo = {
 };
 
 async function telegramCall<T>(
+  token: string,
   method: string,
   init?: {
     body?: BodyInit;
     query?: Record<string, string | number | boolean | undefined>;
   },
 ): Promise<T> {
-  const url = new URL(`${API_BASE()}/${method}`);
+  const url = new URL(`${API_BASE(token)}/${method}`);
   for (const [key, value] of Object.entries(init?.query || {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
@@ -96,7 +97,7 @@ async function telegramCall<T>(
     const description = payload.description || 'Unknown Telegram error';
     if (payload.error_code === 401) {
       throw new TelegramError(
-        'Telegram rejected the bot token. Check TELEGRAM_BOT_TOKEN.',
+        'Telegram rejected the bot token. Check TELEGRAM_BOT_TOKEN(S).',
         401,
       );
     }
@@ -112,12 +113,15 @@ async function telegramCall<T>(
   return payload.result;
 }
 
-async function sendTelegramDocument(input: {
-  bytes: Uint8Array;
-  fileName: string;
-  caption: string;
-  mimeType?: string;
-}): Promise<StoredObjectRef> {
+async function sendTelegramDocument(
+  token: string,
+  input: {
+    bytes: Uint8Array;
+    fileName: string;
+    caption: string;
+    mimeType?: string;
+  },
+): Promise<StoredObjectRef> {
   const form = new FormData();
   form.append('chat_id', appConfig.telegramChatId);
   if (input.caption) {
@@ -132,7 +136,7 @@ async function sendTelegramDocument(input: {
     input.fileName,
   );
 
-  const message = await telegramCall<TelegramDocumentMessage>('sendDocument', {
+  const message = await telegramCall<TelegramDocumentMessage>('sendDocument', token, {
     body: form,
   });
 
@@ -147,13 +151,16 @@ async function sendTelegramDocument(input: {
   };
 }
 
-async function editTelegramDocument(input: {
-  messageId: number;
-  bytes: Uint8Array;
-  fileName: string;
-  caption: string;
-  mimeType?: string;
-}): Promise<StoredObjectRef> {
+async function editTelegramDocument(
+  token: string,
+  input: {
+    messageId: number;
+    bytes: Uint8Array;
+    fileName: string;
+    caption: string;
+    mimeType?: string;
+  },
+): Promise<StoredObjectRef> {
   const form = new FormData();
   form.append('chat_id', appConfig.telegramChatId);
   form.append('message_id', String(input.messageId));
@@ -173,7 +180,7 @@ async function editTelegramDocument(input: {
     input.fileName,
   );
 
-  const message = await telegramCall<TelegramDocumentMessage>('editMessageMedia', {
+  const message = await telegramCall<TelegramDocumentMessage>('editMessageMedia', token, {
     body: form,
   });
 
@@ -188,15 +195,15 @@ async function editTelegramDocument(input: {
   };
 }
 
-async function downloadTelegramText(fileId: string): Promise<string | null> {
+async function downloadTelegramText(token: string, fileId: string): Promise<string | null> {
   try {
-    const file = await telegramCall<{ file_path?: string }>('getFile', {
+    const file = await telegramCall<{ file_path?: string }>('getFile', token, {
       query: { file_id: fileId },
     });
     if (!file.file_path) return null;
 
     const response = await fetch(
-      `https://api.telegram.org/file/bot${appConfig.telegramToken}/${file.file_path}`,
+      `https://api.telegram.org/bot${token}/${file.file_path}`,
       { cache: 'no-store' },
     );
     if (!response.ok) return null;
@@ -209,201 +216,233 @@ async function downloadTelegramText(fileId: string): Promise<string | null> {
   }
 }
 
-const telegramDriver: StorageDriver = {
-  mode: 'telegram',
+/**
+ * Builds a Telegram-backed storage driver over a pool of bots. Chunks are
+ * uploaded round-robin across the pool so large files fan out across bots
+ * instead of competing on a single bot's rate limits. Every chunk remembers
+ * which bot stored it (`botIndex`) so downloads can fetch from the right bot.
+ */
+export function createTelegramDriver(botTokens: string[]): StorageDriver {
+  const pool = botTokens.filter(Boolean);
+  const primary = pool[0] ?? '';
+  let roundRobin = 0;
 
-  async uploadChunk({ data, name, folder, index, total }) {
-    const fileName = formatChunkFilename({ name, folder, index, total });
-    const caption = formatChunkCaption({
-      name,
-      folder,
-      index,
-      total,
-      size: data.byteLength,
-    });
+  function nextBotIndex(): number {
+    const index = roundRobin % pool.length;
+    roundRobin += 1;
+    return index;
+  }
 
-    const uploaded = await sendTelegramDocument({
-      bytes: data,
-      fileName,
-      caption,
-    });
+  const telegramDriver: StorageDriver = {
+    mode: 'telegram',
 
-    return {
-      index,
-      messageId: uploaded.messageId,
-      fileId: uploaded.fileId,
-      size: data.byteLength,
-    } satisfies StoredChunk;
-  },
+    async uploadChunk({ data, name, folder, index, total }) {
+      const botIndex = nextBotIndex();
+      const token = pool[botIndex] ?? primary;
 
-  async getChunkStream(fileId): Promise<ChunkStream> {
-    const file = await telegramCall<{ file_path?: string; file_size?: number }>(
-      'getFile',
-      { query: { file_id: fileId } },
-    );
-
-    if (!file.file_path) {
-      throw new TelegramError(
-        'Telegram did not return a download path (files above the 20 MB Bot API limit cannot be downloaded).',
-      );
-    }
-
-    const response = await fetch(
-      `https://api.telegram.org/file/bot${appConfig.telegramToken}/${file.file_path}`,
-      { cache: 'no-store' },
-    );
-
-    if (!response.ok || !response.body) {
-      throw new TelegramError(
-        `Telegram download failed (HTTP ${response.status}).`,
-      );
-    }
-
-    return { stream: response.body, size: file.file_size ?? null };
-  },
-
-  async writeSidecar({ fileName, caption, content, existingMessageId }) {
-    const bytes = encoder.encode(content);
-    if (existingMessageId && existingMessageId > 0) {
-      try {
-        return await editTelegramDocument({
-          messageId: existingMessageId,
-          bytes,
-          fileName,
-          caption,
-          mimeType: 'application/json',
-        });
-      } catch (error) {
-        console.warn(
-          '[tellynas] could not edit sidecar message in-place, sending replacement',
-          existingMessageId,
-          error,
-        );
-      }
-    }
-
-    return sendTelegramDocument({
-      bytes,
-      fileName,
-      caption,
-      mimeType: 'application/json',
-    });
-  },
-
-  async readSidecarText(fileId) {
-    return downloadTelegramText(fileId);
-  },
-
-  async readDirectory(): Promise<{
-    directory: StorageDirectory | null;
-    messageId: number | null;
-    standaloneSidecar?: SidecarRecord | null;
-  }> {
-    const chat = await telegramCall<TelegramChatInfo>('getChat', {
-      query: { chat_id: appConfig.telegramChatId },
-    });
-
-    const pinned = chat.pinned_message;
-    if (!pinned?.document?.file_id) {
-      return { directory: null, messageId: null };
-    }
-
-    const fromCaption = parseDirectoryCaption(pinned.caption);
-    if (fromCaption) {
-      return { directory: fromCaption, messageId: pinned.message_id };
-    }
-
-    const text = await downloadTelegramText(pinned.document.file_id);
-    const directory = parseDirectory(text);
-    if (directory) {
-      return { directory, messageId: pinned.message_id };
-    }
-
-    const standaloneSidecar = parseSidecarRecord(text, pinned.caption);
-    if (standaloneSidecar) {
-      return { directory: null, messageId: null, standaloneSidecar };
-    }
-
-    return { directory: null, messageId: null };
-  },
-
-  async writeDirectory(directory, existingMessageId) {
-    const serialized = serializeDirectory(directory.entries);
-    const bytes = encoder.encode(serialized.content);
-
-    if (existingMessageId && existingMessageId > 0) {
-      try {
-        const edited = await editTelegramDocument({
-          messageId: existingMessageId,
-          bytes,
-          fileName: DIRECTORY_FILENAME,
-          caption: serialized.caption,
-          mimeType: 'application/json',
-        });
-        return { messageId: edited.messageId, fileId: edited.fileId };
-      } catch (error) {
-        console.warn(
-          '[tellynas] could not update pinned directory in-place, creating a new one',
-          existingMessageId,
-          error,
-        );
-      }
-    }
-
-    const created = await sendTelegramDocument({
-      bytes,
-      fileName: DIRECTORY_FILENAME,
-      caption: serialized.caption,
-      mimeType: 'application/json',
-    });
-
-    try {
-      await telegramCall<boolean>('pinChatMessage', {
-        query: {
-          chat_id: appConfig.telegramChatId,
-          message_id: created.messageId,
-          disable_notification: true,
-        },
+      const fileName = formatChunkFilename({ name, folder, index, total });
+      const caption = formatChunkCaption({
+        name,
+        folder,
+        index,
+        total,
+        size: data.byteLength,
       });
-    } catch (error) {
-      throw new TelegramError(
-        `Could not pin the storage directory message in Telegram: ${(error as Error).message}. Ensure the bot has permission to pin messages in this chat.`,
+
+      const uploaded = await sendTelegramDocument(token, {
+        bytes: data,
+        fileName,
+        caption,
+      });
+
+      return {
+        index,
+        messageId: uploaded.messageId,
+        fileId: uploaded.fileId,
+        size: data.byteLength,
+        botIndex,
+      } satisfies StoredChunk;
+    },
+
+    async getChunkStream(fileId: string, botIndex: number = 0) {
+      const token = pool[botIndex] ?? primary;
+
+      const file = await telegramCall<{ file_path?: string; file_size?: number }>(
+        'getFile',
+        token,
+        { query: { file_id: fileId } },
       );
-    }
 
-    return { messageId: created.messageId, fileId: created.fileId };
-  },
+      if (!file.file_path) {
+        throw new TelegramError(
+          'Telegram did not return a download path (files above the 20 MB Bot API limit cannot be downloaded).',
+        );
+      }
 
-  async deleteMessages(messageIds) {
-    const uniqueIds = [...new Set(messageIds.filter((id) => Number.isFinite(id) && id > 0))];
-    await Promise.all(
-      uniqueIds.map(async (id) => {
+      const response = await fetch(
+        `https://api.telegram.org/bot${token}/${file.file_path}`,
+        { cache: 'no-store' },
+      );
+
+      if (!response.ok || !response.body) {
+        throw new TelegramError(
+          `Telegram download failed (HTTP ${response.status}).`,
+        );
+      }
+
+      return { stream: response.body, size: file.file_size ?? null };
+    },
+
+    async writeSidecar({ fileName, caption, content, existingMessageId }) {
+      const token = primary;
+      const bytes = encoder.encode(content);
+      if (existingMessageId && existingMessageId > 0) {
         try {
-          await telegramCall('deleteMessage', {
-            query: { chat_id: appConfig.telegramChatId, message_id: id },
+          return await editTelegramDocument(token, {
+            messageId: existingMessageId,
+            bytes,
+            fileName,
+            caption,
+            mimeType: 'application/json',
           });
         } catch (error) {
-          // A missing message should not block deleting the rest.
-          console.warn('[tellynas] deleteMessage failed', id, error);
+          console.warn(
+            '[tellynas] could not edit sidecar message in-place, sending replacement',
+            existingMessageId,
+            error,
+          );
         }
-      }),
-    );
-  },
+      }
 
-  async checkConnection() {
-    try {
-      const me = await telegramCall<{ username?: string; first_name?: string }>(
-        'getMe',
+      return sendTelegramDocument(token, {
+        bytes,
+        fileName,
+        caption,
+        mimeType: 'application/json',
+      });
+    },
+
+    async readSidecarText(fileId) {
+      return downloadTelegramText(primary, fileId);
+    },
+
+    async readDirectory(): Promise<{
+      directory: StorageDirectory | null;
+      messageId: number | null;
+      standaloneSidecar?: SidecarRecord | null;
+    }> {
+      const chat = await telegramCall<TelegramChatInfo>('getChat', primary, {
+        query: { chat_id: appConfig.telegramChatId },
+      });
+
+      const pinned = chat.pinned_message;
+      if (!pinned?.document?.file_id) {
+        return { directory: null, messageId: null };
+      }
+
+      const fromCaption = parseDirectoryCaption(pinned.caption);
+      if (fromCaption) {
+        return { directory: fromCaption, messageId: pinned.message_id };
+      }
+
+      const text = await downloadTelegramText(primary, pinned.document.file_id);
+      const directory = parseDirectory(text);
+      if (directory) {
+        return { directory, messageId: pinned.message_id };
+      }
+
+      const standaloneSidecar = parseSidecarRecord(text, pinned.caption);
+      if (standaloneSidecar) {
+        return { directory: null, messageId: null, standaloneSidecar };
+      }
+
+      return { directory: null, messageId: null };
+    },
+
+    async writeDirectory(directory, existingMessageId) {
+      const token = primary;
+      const serialized = serializeDirectory(directory.entries);
+      const bytes = encoder.encode(serialized.content);
+
+      if (existingMessageId && existingMessageId > 0) {
+        try {
+          const edited = await editTelegramDocument(token, {
+            messageId: existingMessageId,
+            bytes,
+            fileName: DIRECTORY_FILENAME,
+            caption: serialized.caption,
+            mimeType: 'application/json',
+          });
+          return { messageId: edited.messageId, fileId: edited.fileId };
+        } catch (error) {
+          console.warn(
+            '[tellynas] could not update pinned directory in-place, creating a new one',
+            existingMessageId,
+            error,
+          );
+        }
+      }
+
+      const created = await sendTelegramDocument(token, {
+        bytes,
+        fileName: DIRECTORY_FILENAME,
+        caption: serialized.caption,
+        mimeType: 'application/json',
+      });
+
+      try {
+        await telegramCall<boolean>('pinChatMessage', token, {
+          query: {
+            chat_id: appConfig.telegramChatId,
+            message_id: created.messageId,
+            disable_notification: true,
+          },
+        });
+      } catch (error) {
+        throw new TelegramError(
+          `Could not pin the storage directory message in Telegram: ${(error as Error).message}. Ensure the bot has permission to pin messages in this chat.`,
+        );
+      }
+
+      return { messageId: created.messageId, fileId: created.fileId };
+    },
+
+    async deleteMessages(messageIds) {
+      const uniqueIds = [...new Set(messageIds.filter((id) => Number.isFinite(id) && id > 0))];
+      await Promise.all(
+        uniqueIds.map(async (id) => {
+          try {
+            await telegramCall('deleteMessage', primary, {
+              query: { chat_id: appConfig.telegramChatId, message_id: id },
+            });
+          } catch (error) {
+            // A missing message should not block deleting the rest.
+            console.warn('[tellynas] deleteMessage failed', id, error);
+          }
+        }),
       );
+    },
+
+    async checkConnection() {
+      const results = await Promise.allSettled(
+        pool.map((token) =>
+          telegramCall<{ username?: string; first_name?: string }>('getMe', token).then(
+            (me) => ({ ok: true, detail: `Connected as @${me.username || me.first_name || 'bot'}` }),
+            (error) => ({ ok: false, detail: (error as Error).message }),
+          ),
+        ),
+      );
+
+      const okCount = results.filter((r) => r.status === 'fulfilled' && r.value.ok).length;
       return {
-        ok: true,
-        detail: `Connected as @${me.username || me.first_name || 'bot'}`,
+        ok: okCount > 0,
+        detail: `${okCount}/${pool.length} bots online${results.some((r) => r.status === 'rejected') ? ' (see server logs)' : ''}`,
       };
-    } catch (error) {
-      return { ok: false, detail: (error as Error).message };
-    }
-  },
-};
+    },
+  };
+
+  return telegramDriver;
+}
 
 /* -------------------------------------------------------------------------- */
 /*                                 Demo driver                                */
@@ -503,10 +542,11 @@ const demoDriver: StorageDriver = {
       messageId: uploaded.messageId,
       fileId: uploaded.fileId,
       size: data.byteLength,
+      botIndex: 0,
     } satisfies StoredChunk;
   },
 
-  async getChunkStream(fileId) {
+  async getChunkStream(fileId, _botIndex = 0) {
     const data = demoStorageState().blobs.get(fileId);
     if (!data) return { stream: new Blob([new Uint8Array()]).stream(), size: 0 };
     return { stream: new Blob([data as BlobPart]).stream(), size: data.byteLength };
@@ -517,7 +557,7 @@ const demoDriver: StorageDriver = {
       bytes: encoder.encode(content),
       fileName,
       caption,
-      existingMessageId,
+      existingMessageId: existingMessageId ?? undefined,
     });
   },
 
@@ -582,5 +622,5 @@ const demoDriver: StorageDriver = {
 };
 
 export function getDriver(): StorageDriver {
-  return useDemoDriver() ? demoDriver : telegramDriver;
+  return useDemoDriver() ? demoDriver : createTelegramDriver(appConfig.botTokens);
 }

@@ -1,15 +1,25 @@
 'use client';
 
 import {
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
+import {
+  Copy,
   Download,
   Eye,
   Folder,
   FolderInput,
+  Link,
   PencilLine,
+  RotateCcw,
   Star,
   Trash2,
   X,
 } from 'lucide-react';
+import { ConfirmDialog, MoveDialog, PromptDialog, SettingsDialog } from './dialogs';
 import { cn } from '@/lib/cn';
 import { api } from '@/lib/client-api';
 import { extensionLabel, formatBytes, formatDateTime } from '@/lib/format';
@@ -30,6 +40,12 @@ type Props = {
   onMove: (file: StoredFile) => void;
   onDelete: (file: StoredFile) => void;
   onNavigateFolder: (folder: string) => void;
+  onRestore?: (file: StoredFile) => void;
+  /** Public share link for the inspected file, if one exists. */
+  share?: { token: string; downloadUrl: string; expiresAt?: number } | null;
+  onCreateShare: (expiresAt?: number) => void;
+  onRevokeShare: (token: string) => void;
+  shareBusy?: boolean;
 };
 
 const SHORTCUTS = [
@@ -53,6 +69,11 @@ export function InspectorPanel({
   onRename,
   onMove,
   onDelete,
+  onRestore,
+  share,
+  onCreateShare,
+  onRevokeShare,
+  shareBusy,
   onNavigateFolder,
 }: Props) {
   if (!file) {
@@ -126,6 +147,9 @@ export function InspectorPanel({
   const kind = kindFromName(file.name, file.mime);
   const style = KIND_STYLES[kind];
   const Icon = iconForKind(kind);
+
+  const [shareExpireOpen, setShareExpireOpen] = useState(false);
+  const [shareExpireDays, setShareExpireDays] = useState("");
 
   return (
     <aside className="flex h-full w-[296px] shrink-0 flex-col border-l border-line bg-sidebar">
@@ -262,6 +286,74 @@ export function InspectorPanel({
           </dl>
         </div>
 
+
+        {/* Public share link */}
+        <div className="rounded-xl border border-line bg-surface p-3">
+          <div className="flex items-baseline justify-between gap-2 mb-2.5">
+            <h3 className="font-mono text-[10px] font-medium tracking-wider text-muted uppercase">
+              Share link
+            </h3>
+            {share && share.expiresAt && (
+              <span className="font-mono text-[11px] text-muted">
+                Expires {new Date(share.expiresAt).toLocaleString()}
+              </span>
+            )}
+          </div>
+          {share ? (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  readOnly
+                  value={typeof window !== 'undefined' ? window.location.origin + share.downloadUrl : ''}
+                  onCopy={(event) => {
+                    event.preventDefault();
+                    navigator.clipboard.writeText(
+                      (event.target as HTMLInputElement).value,
+                    );
+                  }}
+                  className="flex-1 rounded-lg border border-line bg-surface-2/70 px-3 py-1.5 text-[12px] font-mono text-fg outline-none focus:border-fg"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(
+                      typeof window !== 'undefined'
+                        ? window.location.origin + share.downloadUrl
+                        : '',
+                    );
+                  }}
+                  className="shrink-0 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12px] text-fg-soft transition hover:bg-surface-2 hover:text-fg"
+                >
+                  <Copy className="size-3.5 shrink-0" />
+                </button>
+              </div>
+              {shareBusy ? (
+                <p className="text-[11.5px] text-muted">Revoking…</p>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onRevokeShare(share.token)}
+                  className="text-[12px] text-danger underline underline-offset-4 hover:text-danger"
+                >
+                  Revoke link
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setShareExpireDays('');
+                setShareExpireOpen(true);
+              }}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-line border-dashed bg-surface px-3 py-2 text-[12.5px] text-fg-soft transition-colors hover:bg-surface-2 hover:text-fg"
+            >
+              <Link className="size-3.5" />
+              <span>Create share link</span>
+            </button>
+          )}
+        </div>
+
         {/* Manage actions */}
         <div className="space-y-1.5 pt-1">
           <button
@@ -278,18 +370,68 @@ export function InspectorPanel({
             className="flex w-full items-center gap-2.5 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-fg-soft transition-colors hover:bg-surface-2 hover:text-fg"
           >
             <FolderInput className="size-3.5 text-muted" />
-            <span>Move to folder…</span>
+            <span>Move to folder&hellip;</span>
           </button>
-          <button
-            type="button"
-            onClick={() => onDelete(file)}
-            className="flex w-full items-center gap-2.5 rounded-lg border border-danger/20 bg-danger-soft/50 px-3 py-2 text-[12.5px] text-danger transition-colors hover:bg-danger-soft"
-          >
-            <Trash2 className="size-3.5" />
-            <span>Delete file</span>
-          </button>
+          {file.archived ? (
+            <>
+              <button
+                type="button"
+                onClick={() => onRestore?.(file)}
+                className="flex w-full items-center gap-2.5 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-fg-soft transition-colors hover:bg-surface-2 hover:text-fg"
+              >
+                <RotateCcw className="size-3.5 text-muted" />
+                <span>Restore file</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onDelete(file)}
+                className="flex w-full items-center gap-2.5 rounded-lg border border-danger/20 bg-danger-soft/50 px-3 py-2 text-[12.5px] text-danger transition-colors hover:bg-danger-soft"
+              >
+                <Trash2 className="size-3.5" />
+                <span>Delete forever</span>
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onDelete(file)}
+              className="flex w-full items-center gap-2.5 rounded-lg border border-danger/20 bg-danger-soft/50 px-3 py-2 text-[12.5px] text-danger transition-colors hover:bg-danger-soft"
+            >
+              <Trash2 className="size-3.5" />
+              <span>Delete file</span>
+            </button>
+          )}
         </div>
       </div>
+
+      <PromptDialog
+        open={shareExpireOpen}
+        title="Create share link"
+        description="Anyone with the link can download the file, without signing in."
+        label="Expires after (days, optional)"
+        placeholder="e.g. 7"
+        initialValue={shareExpireDays}
+        confirmLabel="Create link"
+        busy={shareBusy}
+        onClose={() => setShareExpireOpen(false)}
+        onConfirm={(value) => {
+          const days = Number(value);
+          setShareExpireDays(value);
+          const expiresAt =
+            value.trim() && Number.isFinite(days) && days > 0
+              ? Date.now() + days * 24 * 60 * 60 * 1000
+              : undefined;
+          onCreateShare(expiresAt);
+          setShareExpireOpen(false);
+        }}
+        validate={(value) => {
+          const days = Number(value);
+          if (value.trim() && (!Number.isFinite(days) || days <= 0)) {
+            return 'Enter a valid number of days.';
+          }
+          return null;
+        }}
+      />
     </aside>
   );
 }
