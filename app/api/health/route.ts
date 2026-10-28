@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { backendKind } from '@/lib/store';
+import { getIndexBackend, isIndexPersistent } from '@/lib/store';
 import { appConfig, isTelegramConfigured, useDemoDriver } from '@/lib/config';
 
 export const runtime = 'nodejs';
@@ -26,7 +26,9 @@ export async function GET() {
       storage: {
         driver: useDemoDriver() ? 'demo' : 'telegram',
         telegramConfigured: isTelegramConfigured(),
-        indexBackend: backendKind,
+        indexBackend: getIndexBackend(),
+        indexPersistent: isIndexPersistent(),
+        serverless: appConfig.serverless,
         chunkSizeMb: Math.round(appConfig.chunkSize / 1024 / 1024),
       },
       config: {

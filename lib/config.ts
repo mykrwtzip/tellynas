@@ -11,6 +11,19 @@ const num = (value: string | undefined, fallback: number) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+/** True on Vercel / other FaaS hosts: read-only disk, ~4.5 MB request bodies. */
+const serverless = Boolean(
+  process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY,
+);
+
+/**
+ * Vercel rejects request bodies above 4.5 MB before the handler runs, so the
+ * chunk size is capped there unless the operator deliberately overrides it.
+ */
+const DEFAULT_CHUNK_MB = serverless ? 4 : 8;
+const rawChunkMb = num(process.env.TELEGRAM_CHUNK_MB, DEFAULT_CHUNK_MB);
+const maxChunkMb = serverless ? Math.min(rawChunkMb, 4) : Math.min(rawChunkMb, 19);
+
 export const appConfig = {
   telegramToken: (process.env.TELEGRAM_BOT_TOKEN || '').trim(),
   telegramChatId: (process.env.TELEGRAM_CHAT_ID || '').trim(),
@@ -22,7 +35,9 @@ export const appConfig = {
   /** Enable the in-memory demo driver (simulated storage, no Telegram needed). */
   demoMode: truthy(process.env.DEMO_MODE),
   /** Max bytes sent to Telegram per chunk. getFile() only works up to 20 MB. */
-  chunkSize: Math.min(num(process.env.TELEGRAM_CHUNK_MB, 8), 19) * 1024 * 1024,
+  chunkSize: maxChunkMb * 1024 * 1024,
+  /** Host without a writable, persistent filesystem. */
+  serverless,
   /** Optional Upstash Redis REST credentials for the file index. */
   redisUrl: process.env.UPSTASH_REDIS_REST_URL || '',
   redisToken: process.env.UPSTASH_REDIS_REST_TOKEN || '',
@@ -45,6 +60,7 @@ export const missingEnvVars = () => {
 /** Public, safe-to-expose runtime info for the UI. */
 export const publicRuntimeConfig = () => ({
   demo: useDemoDriver(),
+  serverless,
   telegramConfigured: isTelegramConfigured(),
   missingEnv: missingEnvVars(),
   chunkSize: appConfig.chunkSize,

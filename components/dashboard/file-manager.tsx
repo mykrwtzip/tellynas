@@ -53,6 +53,7 @@ type Props = {
   username: string | null;
   runtime: SessionInfo['runtime'];
   indexBackend: string;
+  indexPersistent: boolean;
 };
 
 const SORT_LABELS: Record<SortKey, string> = {
@@ -61,7 +62,7 @@ const SORT_LABELS: Record<SortKey, string> = {
   size: 'Largest first',
 };
 
-export function FileManager({ username, runtime, indexBackend }: Props) {
+export function FileManager({ username, runtime, indexBackend, indexPersistent }: Props) {
   const router = useRouter();
   const toast = useToast();
   const { theme, toggleTheme } = useTheme();
@@ -977,6 +978,18 @@ export function FileManager({ username, runtime, indexBackend }: Props) {
               )}
             </section>
 
+            {/* Volatile index warning (serverless without Redis) */}
+            {!indexPersistent && !runtime.demo && (
+              <div className="mt-6 flex flex-wrap items-center gap-2 rounded-xl border border-warning/25 bg-warning/10 px-3.5 py-2.5">
+                <Badge tone="warning">Not persistent</Badge>
+                <p className="text-[12px] text-warning">
+                  This host cannot write a file index, so the list is kept in memory and
+                  resets when the instance sleeps. Files stay safe in Telegram — add{' '}
+                  <code className="font-mono">UPSTASH_REDIS_REST_URL</code> to keep the list.
+                </p>
+              </div>
+            )}
+
             {/* Demo hint */}
             {runtime.demo && library.files.length > 0 && (
               <div className="mt-6 flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface-2/50 px-3.5 py-2.5">
@@ -1107,6 +1120,7 @@ export function FileManager({ username, runtime, indexBackend }: Props) {
         system={system}
         sessionUsername={username}
         indexBackend={indexBackend}
+        indexPersistent={indexPersistent}
         stats={library.stats}
         onRefreshSystem={() => {
           setSystem(null);
