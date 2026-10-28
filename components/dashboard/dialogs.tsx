@@ -4,13 +4,14 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Check,
+  Folder,
   FolderInput,
   FolderPlus,
   HardDrive,
-  Info,
   LogOut,
   Moon,
   RefreshCw,
+  Search,
   Server,
   Sun,
   Trash2,
@@ -18,7 +19,7 @@ import {
 import { cn } from '@/lib/cn';
 import { formatBytes } from '@/lib/format';
 import type { SystemInfo } from '@/lib/client-api';
-import { Badge, Button, Modal, Spinner } from '@/components/ui';
+import { Badge, Button, Kbd, Modal, Spinner } from '@/components/ui';
 import { useTheme } from '@/components/theme';
 
 /* ------------------------------ Prompt dialog ----------------------------- */
@@ -96,7 +97,7 @@ export function PromptDialog({
         </>
       }
     >
-      <label htmlFor="prompt-input" className="mb-1.5 block text-xs font-medium text-fg-soft">
+      <label htmlFor="prompt-input" className="mb-1.5 block text-[12px] font-medium text-fg-soft">
         {label}
       </label>
       <input
@@ -114,7 +115,7 @@ export function PromptDialog({
             submit();
           }
         }}
-        className="h-11 w-full rounded-xl border border-line bg-surface-2 px-3 text-sm text-fg outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
+        className="h-9.5 w-full rounded-lg border border-line-strong bg-surface-2/70 px-3 text-[13.5px] text-fg transition outline-none focus:border-fg focus:bg-surface"
       />
       {message && (
         <p className="mt-2 flex items-start gap-1.5 text-[12px] text-danger">
@@ -155,7 +156,7 @@ export function ConfirmDialog({
       description={description}
       size="sm"
       icon={
-        <div className="flex size-9 items-center justify-center rounded-xl bg-danger-soft text-danger">
+        <div className="flex size-8 items-center justify-center rounded-lg border border-danger/25 bg-danger-soft text-danger">
           <Trash2 className="size-4" />
         </div>
       }
@@ -168,7 +169,7 @@ export function ConfirmDialog({
             variant="danger"
             onClick={onConfirm}
             loading={busy}
-            className="bg-danger text-white hover:brightness-110"
+            className="bg-danger text-white hover:opacity-90"
           >
             {confirmLabel}
           </Button>
@@ -188,7 +189,7 @@ export function ConfirmDialog({
 
 export function MoveDialog({
   open,
-  fileName,
+  titleLabel,
   folders,
   currentFolder,
   busy,
@@ -196,30 +197,39 @@ export function MoveDialog({
   onClose,
 }: {
   open: boolean;
-  fileName: string;
+  titleLabel: string;
   folders: string[];
-  currentFolder: string;
+  currentFolder?: string;
   busy?: boolean;
   onMove: (folder: string) => void;
   onClose: () => void;
 }) {
-  const [selected, setSelected] = useState(currentFolder);
+  const [selected, setSelected] = useState(currentFolder ?? '');
+  const [filter, setFilter] = useState('');
 
   useEffect(() => {
-    if (open) setSelected(currentFolder);
+    if (open) {
+      setSelected(currentFolder ?? '');
+      setFilter('');
+    }
   }, [open, currentFolder]);
 
-  const options = useMemo(() => ['', ...folders.filter(Boolean)], [folders]);
+  const options = useMemo(() => {
+    const all = ['', ...folders.filter(Boolean)];
+    const q = filter.trim().toLowerCase();
+    if (!q) return all;
+    return all.filter((path) => (path || 'drive root home').toLowerCase().includes(q));
+  }, [filter, folders]);
 
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title="Move file"
-      description={fileName}
+      title="Move to folder"
+      description={titleLabel}
       size="sm"
       icon={
-        <div className="flex size-9 items-center justify-center rounded-xl bg-accent-soft text-accent">
+        <div className="flex size-8 items-center justify-center rounded-lg border border-line-strong bg-surface-2 text-fg">
           <FolderInput className="size-4" />
         </div>
       }
@@ -231,7 +241,7 @@ export function MoveDialog({
           <Button
             variant="primary"
             loading={busy}
-            disabled={selected === currentFolder}
+            disabled={currentFolder !== undefined && selected === currentFolder}
             onClick={() => onMove(selected)}
           >
             Move here
@@ -239,27 +249,42 @@ export function MoveDialog({
         </>
       }
     >
-      <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
+      {folders.length > 4 && (
+        <div className="relative mb-2.5">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted" />
+          <input
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="Filter folders…"
+            className="h-8.5 w-full rounded-lg border border-line bg-surface-2 pl-8 pr-2.5 text-[12.5px] text-fg outline-none focus:border-fg"
+          />
+        </div>
+      )}
+
+      <div className="max-h-60 space-y-0.5 overflow-y-auto rounded-xl border border-line bg-surface-2/35 p-1">
         {options.map((path) => {
           const active = selected === path;
-          const disabled = path === currentFolder;
+          const disabled = currentFolder !== undefined && path === currentFolder;
           return (
             <button
-              key={path || 'root'}
+              key={path || '__root__'}
               type="button"
               disabled={disabled}
               onClick={() => setSelected(path)}
               className={cn(
-                'flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-[13px] transition-colors',
+                'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12.5px] transition-colors',
                 active
-                  ? 'border-accent/40 bg-accent-soft text-accent'
-                  : 'border-transparent text-fg-soft hover:bg-surface-2',
-                disabled && 'cursor-not-allowed opacity-50',
+                  ? 'bg-surface font-medium text-fg shadow-2xs ring-1 ring-line-strong'
+                  : 'text-fg-soft hover:bg-surface/60 hover:text-fg',
+                disabled && 'cursor-not-allowed opacity-45',
               )}
             >
-              <FolderInput className="size-3.5 shrink-0" />
-              <span className="flex-1 truncate">{path || 'Home (root)'}</span>
-              {active && <Check className="size-3.5" />}
+              <Folder className="size-3.5 shrink-0 text-muted" />
+              <span className="flex-1 truncate font-mono text-[12px]">
+                /{path || ''}
+                {!path && <span className="ml-1.5 font-sans text-muted">(Drive root)</span>}
+              </span>
+              {active && <Check className="size-3.5 text-fg" />}
             </button>
           );
         })}
@@ -295,43 +320,25 @@ export function SettingsDialog({
     onLogout();
   };
 
-  const rows = [
-    {
-      icon: <Server className="size-4" />,
-      label: 'Cloud storage',
-      value: system ? (system.demo ? 'Demo workspace' : 'Connected') : 'Checking…',
-    },
-    {
-      icon: <HardDrive className="size-4" />,
-      label: 'Sync across devices',
-      value: system ? (system.persistent ? 'Automatic' : 'Temporary (demo)') : '—',
-    },
-    {
-      icon: <Info className="size-4" />,
-      label: 'Total stored',
-      value: formatBytes(stats.totalBytes),
-    },
-  ];
-
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title="Settings"
-      description="Storage status, appearance and account."
+      title="Workspace settings"
+      description="Cloud sync status, theme, shortcuts, and account."
       size="md"
       footer={
         <>
           <Button
             variant="ghost"
-            icon={<RefreshCw className="size-4" />}
+            icon={<RefreshCw className="size-3.5" />}
             onClick={onRefreshSystem}
           >
-            Re-check
+            Re-check status
           </Button>
           <Button
             variant="danger"
-            icon={<LogOut className="size-4" />}
+            icon={<LogOut className="size-3.5" />}
             loading={loggingOut}
             onClick={logout}
           >
@@ -342,19 +349,26 @@ export function SettingsDialog({
     >
       <div className="space-y-5">
         <section>
-          <h3 className="mb-2 text-[11px] font-semibold tracking-[0.1em] text-muted uppercase">
-            Storage
+          <h3 className="mb-2 font-mono text-[10.5px] font-medium tracking-wider text-muted uppercase">
+            Cloud storage
           </h3>
-          <div className="divide-y divide-[var(--border-subtle)] overflow-hidden rounded-xl border border-line bg-surface-2/50">
-            {rows.map((row) => (
-              <div key={row.label} className="flex items-center gap-3 px-3.5 py-2.5">
-                <span className="text-muted">{row.icon}</span>
-                <span className="flex-1 text-[12.5px] text-fg-soft">{row.label}</span>
-                <span className="text-[12px] font-medium text-fg">{row.value}</span>
-              </div>
-            ))}
+          <div className="divide-y divide-[var(--border-subtle)] overflow-hidden rounded-xl border border-line bg-surface-2/35">
+            <div className="flex items-center gap-3 px-3.5 py-2.5">
+              <Server className="size-4 text-muted" />
+              <span className="flex-1 text-[12.5px] text-fg-soft">Workspace mode</span>
+              <Badge tone={system?.demo ? 'warning' : 'success'}>
+                {system ? (system.demo ? 'Demo workspace' : 'Connected') : 'Checking…'}
+              </Badge>
+            </div>
+            <div className="flex items-center gap-3 px-3.5 py-2.5">
+              <HardDrive className="size-4 text-muted" />
+              <span className="flex-1 text-[12.5px] text-fg-soft">Cross-device sync</span>
+              <span className="font-mono text-[12px] font-medium text-fg">
+                {system ? (system.persistent ? 'Enabled' : 'Temporary') : '—'}
+              </span>
+            </div>
             <div className="flex items-start gap-3 px-3.5 py-2.5">
-              <span className="mt-0.5 text-muted">
+              <span className="mt-0.5">
                 {system ? (
                   system.connection.ok ? (
                     <Check className="size-4 text-success" />
@@ -366,11 +380,11 @@ export function SettingsDialog({
                 )}
               </span>
               <div className="flex-1">
-                <p className="text-[12.5px] text-fg-soft">Status</p>
+                <p className="text-[12.5px] font-medium text-fg">Status</p>
                 <p className="mt-0.5 text-[12px] leading-relaxed text-muted">
                   {system
                     ? system.connection.ok
-                      ? 'Your cloud storage is online and synced.'
+                      ? 'Your cloud storage is online and synced across devices.'
                       : system.demo
                         ? 'Running in demo mode. Connect cloud storage in your server environment to keep files permanently.'
                         : system.connection.detail
@@ -381,22 +395,22 @@ export function SettingsDialog({
           </div>
 
           {system?.usingDefaultPassword && (
-            <div className="mt-2 rounded-xl border border-danger/25 bg-danger-soft px-3.5 py-2.5 text-[12px] leading-relaxed text-danger">
-              Default password is still active. Update your account password before sharing
+            <div className="mt-2 rounded-lg border border-danger/25 bg-danger-soft px-3 py-2 text-[12px] leading-relaxed text-danger">
+              Default password is still active. Change your account password before sharing
               this deployment.
             </div>
           )}
         </section>
 
         <section>
-          <h3 className="mb-2 text-[11px] font-semibold tracking-[0.1em] text-muted uppercase">
+          <h3 className="mb-2 font-mono text-[10.5px] font-medium tracking-wider text-muted uppercase">
             Appearance
           </h3>
           <div className="grid grid-cols-2 gap-2">
             {(
               [
-                { id: 'light', label: 'Light', icon: <Sun className="size-4" /> },
-                { id: 'dark', label: 'Dark', icon: <Moon className="size-4" /> },
+                { id: 'light', label: 'Light', icon: <Sun className="size-3.5" /> },
+                { id: 'dark', label: 'Dark', icon: <Moon className="size-3.5" /> },
               ] as const
             ).map((option) => (
               <button
@@ -404,14 +418,14 @@ export function SettingsDialog({
                 type="button"
                 onClick={() => setTheme(option.id)}
                 className={cn(
-                  'flex items-center gap-2 rounded-xl border px-3 py-2.5 text-[13px] transition',
+                  'flex items-center gap-2 rounded-xl border px-3 py-2.5 text-[12.5px] transition',
                   theme === option.id
-                    ? 'border-accent/50 bg-accent-soft font-medium text-accent'
-                    : 'border-line text-fg-soft hover:bg-surface-2',
+                    ? 'border-fg bg-surface-2 font-medium text-fg'
+                    : 'border-line text-fg-soft hover:bg-surface-2/60',
                 )}
               >
                 {option.icon}
-                {option.label}
+                <span>{option.label}</span>
                 {theme === option.id && <Check className="ml-auto size-3.5" />}
               </button>
             ))}
@@ -419,21 +433,37 @@ export function SettingsDialog({
         </section>
 
         <section>
-          <h3 className="mb-2 text-[11px] font-semibold tracking-[0.1em] text-muted uppercase">
-            Account & library
+          <h3 className="mb-2 font-mono text-[10.5px] font-medium tracking-wider text-muted uppercase">
+            Keyboard shortcuts
           </h3>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone="neutral">Signed in as {sessionUsername ?? 'unknown'}</Badge>
-            <Badge tone="neutral">{stats.fileCount} files</Badge>
-            <Badge tone="neutral">{stats.folderCount} folders</Badge>
-            <Badge tone="neutral">{formatBytes(stats.totalBytes)} stored</Badge>
+          <div className="grid grid-cols-2 gap-1.5 rounded-xl border border-line bg-surface-2/35 p-2.5 text-[12px]">
+            {[
+              ['⌘K', 'Command menu'],
+              ['U', 'Upload files'],
+              ['N', 'New folder'],
+              ['I', 'Details panel'],
+              ['⌘V', 'Paste upload'],
+              ['⌫', 'Delete selected'],
+            ].map(([key, desc]) => (
+              <div key={desc} className="flex items-center justify-between rounded-md px-2 py-1">
+                <span className="text-fg-soft">{desc}</span>
+                <Kbd>{key}</Kbd>
+              </div>
+            ))}
           </div>
+        </section>
+
+        <section className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3 text-[12px] text-muted">
+          <span>
+            Signed in as <strong className="font-medium text-fg">{sessionUsername ?? 'user'}</strong>
+          </span>
+          <span className="font-mono tabular-nums">
+            {stats.fileCount} files · {stats.folderCount} folders · {formatBytes(stats.totalBytes)}
+          </span>
         </section>
       </div>
     </Modal>
   );
 }
-
-/* ---------------------------- Upload new folder --------------------------- */
 
 export const FolderPlusIcon = FolderPlus;

@@ -2,14 +2,24 @@
 
 import { useRouter } from 'next/navigation';
 import { useRef, useState, type FormEvent } from 'react';
-import { AlertCircle, ArrowRight, Eye, EyeOff, Lock, ShieldAlert, User } from 'lucide-react';
+import { AlertCircle, ArrowRight, Eye, EyeOff, Moon, ShieldAlert, Sun } from 'lucide-react';
 import { api, ApiError, type SessionInfo } from '@/lib/client-api';
-import { Button } from './ui';
+import { useTheme } from './theme';
+import { Button, IconButton } from './ui';
 
 type Props = {
   next?: string;
   runtime: SessionInfo['runtime'];
 };
+
+export function LoginThemeToggle() {
+  const { theme, toggleTheme } = useTheme();
+  return (
+    <IconButton label="Toggle theme" onClick={toggleTheme}>
+      {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
+    </IconButton>
+  );
+}
 
 export function LoginForm({ next, runtime }: Props) {
   const router = useRouter();
@@ -41,34 +51,30 @@ export function LoginForm({ next, runtime }: Props) {
   };
 
   return (
-    <form onSubmit={submit} className="mt-7 space-y-4" noValidate>
+    <form onSubmit={submit} className="mt-6 space-y-4" noValidate>
       <div>
-        <label htmlFor="username" className="mb-1.5 block text-xs font-medium text-fg-soft">
+        <label htmlFor="username" className="mb-1.5 block text-[12px] font-medium text-fg-soft">
           Username
         </label>
-        <div className="group flex items-center gap-2.5 rounded-xl border border-line bg-surface-2 px-3 transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
-          <User className="size-4 shrink-0 text-muted" />
-          <input
-            id="username"
-            name="username"
-            autoComplete="username"
-            autoCapitalize="none"
-            spellCheck={false}
-            required
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-            placeholder={runtime.defaultUsername || 'admin'}
-            className="h-11 w-full bg-transparent text-sm text-fg outline-none placeholder:text-muted/70"
-          />
-        </div>
+        <input
+          id="username"
+          name="username"
+          autoComplete="username"
+          autoCapitalize="none"
+          spellCheck={false}
+          required
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
+          placeholder={runtime.defaultUsername || 'admin'}
+          className="h-10 w-full rounded-lg border border-line-strong bg-surface-2/70 px-3 text-[13.5px] text-fg transition-colors outline-none placeholder:text-muted/60 focus:border-fg focus:bg-surface"
+        />
       </div>
 
       <div>
-        <label htmlFor="password" className="mb-1.5 block text-xs font-medium text-fg-soft">
+        <label htmlFor="password" className="mb-1.5 block text-[12px] font-medium text-fg-soft">
           Password
         </label>
-        <div className="flex items-center gap-2.5 rounded-xl border border-line bg-surface-2 px-3 transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
-          <Lock className="size-4 shrink-0 text-muted" />
+        <div className="relative flex items-center">
           <input
             id="password"
             ref={passwordRef}
@@ -78,16 +84,16 @@ export function LoginForm({ next, runtime }: Props) {
             required
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            placeholder="••••••••"
-            className="h-11 w-full bg-transparent text-sm text-fg outline-none placeholder:text-muted/70"
+            placeholder="Enter password"
+            className="h-10 w-full rounded-lg border border-line-strong bg-surface-2/70 pr-9 pl-3 text-[13.5px] text-fg transition-colors outline-none placeholder:text-muted/60 focus:border-fg focus:bg-surface"
           />
           <button
             type="button"
             onClick={() => setShowPassword((value) => !value)}
             aria-label={showPassword ? 'Hide password' : 'Show password'}
-            className="shrink-0 rounded-md p-1 text-muted transition-colors hover:text-fg"
+            className="absolute right-2 rounded-md p-1 text-muted transition-colors hover:text-fg"
           >
-            {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+            {showPassword ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
           </button>
         </div>
       </div>
@@ -95,9 +101,9 @@ export function LoginForm({ next, runtime }: Props) {
       {error && (
         <div
           role="alert"
-          className="animate-fade-in flex items-start gap-2 rounded-xl border border-danger/25 bg-danger-soft px-3 py-2.5 text-[13px] text-danger"
+          className="animate-pop-in flex items-start gap-2 rounded-lg border border-danger/25 bg-danger-soft px-3 py-2 text-[12.5px] text-danger"
         >
-          <AlertCircle className="mt-0.5 size-4 shrink-0" />
+          <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
           <span>{error}</span>
         </div>
       )}
@@ -107,28 +113,23 @@ export function LoginForm({ next, runtime }: Props) {
         variant="primary"
         size="lg"
         loading={loading}
-        className="w-full"
-        icon={!loading ? <ArrowRight className="size-4" /> : undefined}
+        className="w-full justify-center"
       >
-        {loading ? 'Signing in…' : 'Sign in'}
+        <span>{loading ? 'Signing in…' : 'Continue to Drive'}</span>
+        {!loading && <ArrowRight className="size-3.5" />}
       </Button>
 
       {runtime.usingDefaultPassword && (
-        <div className="flex items-start gap-2 rounded-xl border border-warning/25 bg-warning/10 px-3 py-2.5 text-[12px] leading-relaxed text-warning">
-          <ShieldAlert className="mt-0.5 size-4 shrink-0" />
+        <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2.5 text-[11.5px] leading-relaxed text-warning">
+          <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
           <span>
-            Running on default credentials (<strong>{runtime.defaultUsername}</strong> /{' '}
-            <strong>changeme</strong>). Change the default password before sharing this
-            deployment.
+            Default credentials active (
+            <span className="font-mono font-medium">{runtime.defaultUsername}</span> /{' '}
+            <span className="font-mono font-medium">changeme</span>). Update your password
+            before sharing this deployment.
           </span>
         </div>
       )}
-
-      <p className="pt-1 text-center text-[11px] text-muted">
-        {runtime.demo
-          ? 'Demo workspace — files are temporary until cloud storage is connected.'
-          : 'Sign in from any device to access your library.'}
-      </p>
     </form>
   );
 }

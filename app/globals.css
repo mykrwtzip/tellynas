@@ -3,54 +3,60 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 :root {
-  --font-inter: 'Inter';
-  --bg: #f5f6fa;
-  --bg-glow-a: rgba(99, 102, 241, 0.18);
-  --bg-glow-b: rgba(56, 189, 248, 0.16);
+  --bg: #f8f8f9;
+  --sidebar: #f2f2f5;
   --surface: #ffffff;
-  --surface-2: #f1f3f9;
-  --surface-3: #e7eaf3;
-  --border-subtle: rgba(15, 23, 42, 0.09);
-  --border-strong: rgba(15, 23, 42, 0.16);
-  --fg: #0f172a;
-  --fg-soft: #334155;
-  --muted: #64748b;
-  --accent: #4f46e5;
-  --accent-strong: #4338ca;
-  --accent-soft: rgba(79, 70, 229, 0.12);
+  --surface-2: #f3f3f6;
+  --surface-3: #e7e7ec;
+  --border-subtle: rgba(9, 9, 11, 0.08);
+  --border-strong: rgba(9, 9, 11, 0.15);
+  --fg: #09090b;
+  --fg-soft: #3f3f46;
+  --muted: #71717a;
+  --accent: #0284c7;
+  --accent-strong: #0369a1;
+  --accent-soft: rgba(2, 132, 199, 0.1);
   --danger: #dc2626;
-  --danger-soft: rgba(220, 38, 38, 0.12);
+  --danger-soft: rgba(220, 38, 38, 0.1);
   --success: #16a34a;
   --warning: #d97706;
-  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 12px 32px -18px rgba(15, 23, 42, 0.35);
-  --shadow-float: 0 24px 60px -24px rgba(15, 23, 42, 0.45);
+  --shadow-card:
+    0 1px 2px rgba(9, 9, 11, 0.04),
+    0 8px 24px -12px rgba(9, 9, 11, 0.12);
+  --shadow-float:
+    0 0 0 1px rgba(9, 9, 11, 0.06),
+    0 20px 48px -12px rgba(9, 9, 11, 0.22);
 }
 
 .dark {
-  --bg: #070b14;
-  --bg-glow-a: rgba(79, 70, 229, 0.28);
-  --bg-glow-b: rgba(14, 165, 233, 0.2);
-  --surface: #0e1524;
-  --surface-2: #141d30;
-  --surface-3: #1b2740;
-  --border-subtle: rgba(148, 163, 184, 0.14);
-  --border-strong: rgba(148, 163, 184, 0.26);
-  --fg: #e9eefb;
-  --fg-soft: #c3cde0;
-  --muted: #8b9ab7;
-  --accent: #6366f1;
-  --accent-strong: #818cf8;
-  --accent-soft: rgba(99, 102, 241, 0.18);
+  --bg: #09090b;
+  --sidebar: #0d0d10;
+  --surface: #121216;
+  --surface-2: #19191f;
+  --surface-3: #23232b;
+  --border-subtle: rgba(255, 255, 255, 0.075);
+  --border-strong: rgba(255, 255, 255, 0.145);
+  --fg: #fafafa;
+  --fg-soft: #d4d4d8;
+  --muted: #8b8b95;
+  --accent: #38bdf8;
+  --accent-strong: #0ea5e9;
+  --accent-soft: rgba(56, 189, 248, 0.13);
   --danger: #f87171;
-  --danger-soft: rgba(248, 113, 113, 0.14);
+  --danger-soft: rgba(248, 113, 113, 0.13);
   --success: #34d399;
   --warning: #fbbf24;
-  --shadow-card: 0 1px 1px rgba(2, 6, 23, 0.5), 0 18px 40px -22px rgba(2, 6, 23, 0.9);
-  --shadow-float: 0 30px 70px -30px rgba(2, 6, 23, 0.95);
+  --shadow-card:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    0 8px 24px -12px rgba(0, 0, 0, 0.65);
+  --shadow-float:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 24px 56px -12px rgba(0, 0, 0, 0.85);
 }
 
 @theme inline {
   --color-bg: var(--bg);
+  --color-sidebar: var(--sidebar);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-surface-3: var(--surface-3);
@@ -66,10 +72,10 @@
   --color-danger-soft: var(--danger-soft);
   --color-success: var(--success);
   --color-warning: var(--warning);
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
   --shadow-card: var(--shadow-card);
   --shadow-float: var(--shadow-float);
-  --radius-xl2: 1.25rem;
 }
 
 * {
@@ -85,6 +91,7 @@ body {
   background-color: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
+  letter-spacing: -0.011em;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -94,21 +101,15 @@ button:not(:disabled),
   cursor: pointer;
 }
 
-/* Ambient background glow — pure radial gradients avoid expensive GPU Gaussian blur passes. */
-.ambient {
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  overflow: hidden;
-  pointer-events: none;
-  background:
-    radial-gradient(38rem circle at 8% -6%, var(--bg-glow-a), transparent 70%),
-    radial-gradient(40rem circle at 92% 106%, var(--bg-glow-b), transparent 70%);
+/* Subtle architectural dot grid for empty / hero stages */
+.bg-dot-grid {
+  background-image: radial-gradient(var(--border-strong) 1px, transparent 1px);
+  background-size: 20px 20px;
 }
 
 ::selection {
   background: var(--accent);
-  color: white;
+  color: #ffffff;
 }
 
 /* Scrollbars */
@@ -118,14 +119,14 @@ button:not(:disabled),
 }
 
 *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 *::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border-radius: 9999px;
-  border: 3px solid transparent;
+  border: 2px solid transparent;
   background-clip: content-box;
 }
 
@@ -133,10 +134,9 @@ button:not(:disabled),
   background: transparent;
 }
 
-/* Focus ring */
 :focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: 1px;
 }
 
 @keyframes fade-in {
@@ -151,7 +151,7 @@ button:not(:disabled),
 @keyframes pop-in {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.98);
+    transform: translateY(4px) scale(0.985);
   }
   to {
     opacity: 1;
@@ -162,11 +162,22 @@ button:not(:disabled),
 @keyframes slide-up {
   from {
     opacity: 0;
-    transform: translateY(14px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 
@@ -181,11 +192,15 @@ button:not(:disabled),
 }
 
 .animate-pop-in {
-  animation: pop-in 0.14s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: pop-in 0.14s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .animate-slide-up {
-  animation: slide-up 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: slide-up 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .skeleton {
@@ -202,10 +217,10 @@ button:not(:disabled),
   background: linear-gradient(
     90deg,
     transparent,
-    color-mix(in srgb, var(--surface-3) 70%, transparent),
+    color-mix(in srgb, var(--surface-3) 75%, transparent),
     transparent
   );
-  animation: shimmer 1.6s infinite;
+  animation: shimmer 1.5s infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

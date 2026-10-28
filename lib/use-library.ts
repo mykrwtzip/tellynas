@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError } from './client-api';
+import type { MediaCategory } from './file-types';
 import type { StorageStats, StoredFile } from './types';
 
 export type FolderEntry = { path: string; createdAt: number };
 
-export type LibraryView = 'all' | 'recent' | 'starred';
+export type LibraryView = 'all' | 'recent' | 'starred' | MediaCategory;
 
 export type LibraryState = {
   files: StoredFile[];
@@ -256,15 +257,17 @@ export function folderTree(files: StoredFile[], folders: FolderEntry[]) {
     .sort((a, b) => a.localeCompare(b))
     .map((path) => {
       const segments = path.split('/');
-      const directFiles = files.filter((file) => file.folder === path).length;
-      const nestedFiles = files.filter((file) => file.folder.startsWith(`${path}/`)).length;
+      const direct = files.filter((file) => file.folder === path);
+      const nested = files.filter((file) => file.folder.startsWith(`${path}/`));
+      const totalBytes = [...direct, ...nested].reduce((sum, file) => sum + file.size, 0);
       return {
         path,
         name: segments[segments.length - 1],
         depth: segments.length - 1,
         parent: segments.slice(0, -1).join('/'),
-        fileCount: directFiles,
-        totalCount: directFiles + nestedFiles,
+        fileCount: direct.length,
+        totalCount: direct.length + nested.length,
+        totalBytes,
       };
     });
 }

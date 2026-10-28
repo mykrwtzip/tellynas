@@ -45,7 +45,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       toastCounter += 1;
       const id = toastCounter;
       setToasts((current) => [...current.slice(-3), { ...toast, id }]);
-      window.setTimeout(() => dismiss(id), toast.variant === 'error' ? 7000 : 4200);
+      window.setTimeout(() => dismiss(id), toast.variant === 'error' ? 6500 : 3400);
     },
     [dismiss],
   );
@@ -88,19 +88,19 @@ function ToastViewport() {
   return (
     <div
       aria-live="polite"
-      className="pointer-events-none fixed inset-x-0 bottom-4 z-[100] flex flex-col items-center gap-2 px-4 sm:inset-x-auto sm:right-4 sm:items-end"
+      className="pointer-events-none fixed inset-x-0 top-3.5 z-[100] flex flex-col items-center gap-2 px-4 sm:inset-x-auto sm:right-4 sm:items-end"
     >
       {toasts.map((toast) => (
         <div
           key={toast.id}
           role="status"
-          className="animate-slide-up pointer-events-auto flex w-full max-w-sm items-start gap-2.5 rounded-xl border border-line bg-surface/95 px-4 py-3 shadow-float backdrop-blur"
+          className="animate-pop-in pointer-events-auto flex w-full max-w-[340px] items-start gap-2.5 rounded-xl border border-line-strong bg-surface/95 px-3.5 py-2.5 shadow-float backdrop-blur-md"
         >
           <div className="mt-0.5 shrink-0">{icons[toast.variant]}</div>
           <div className="min-w-0 flex-1">
-            <p className="text-[13px] font-medium text-fg">{toast.title}</p>
+            <p className="truncate text-[12.5px] font-medium text-fg">{toast.title}</p>
             {toast.description && (
-              <p className="mt-0.5 text-xs leading-relaxed break-words text-muted">
+              <p className="mt-0.5 truncate font-mono text-[11px] text-muted">
                 {toast.description}
               </p>
             )}
@@ -110,7 +110,7 @@ function ToastViewport() {
             aria-label="Dismiss notification"
             onClick={() => dismiss(toast.id)}
             className={cn(
-              '-mt-1 -mr-2 inline-flex size-7 shrink-0 items-center justify-center rounded-md',
+              '-mt-0.5 -mr-1.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md',
               'text-muted transition-colors hover:bg-surface-2 hover:text-fg',
             )}
           >
