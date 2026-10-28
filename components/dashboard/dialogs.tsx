@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { formatBytes } from '@/lib/format';
-import type { SystemInfo } from '@/lib/client-api';
+import { api, type SystemInfo } from '@/lib/client-api';
 import { Badge, Button, Kbd, Modal, Spinner } from '@/components/ui';
 import { useTheme } from '@/components/theme';
 
@@ -314,6 +314,20 @@ export function SettingsDialog({
 }) {
   const { theme, setTheme } = useTheme();
   const [loggingOut, setLoggingOut] = useState(false);
+  const [shares, setShares] = useState<Awaited<ReturnType<typeof api.shares>>>([]);
+  const [shareError, setShareError] = useState('');
+  const [revoking, setRevoking] = useState('');
+  useEffect(() => {
+    if (!open) return;
+    setShareError('');
+    api.shares().then(setShares).catch(() => setShareError('Could not load public links.'));
+  }, [open]);
+  const revoke = async (token: string) => {
+    setRevoking(token); setShareError('');
+    try { await api.revokeShare(token); setShares(current => current.filter(item => item.share.token !== token)); }
+    catch { setShareError('Could not revoke this link. Please try again.'); }
+    finally { setRevoking(''); }
+  };
 
   const logout = () => {
     setLoggingOut(true);
@@ -402,6 +416,13 @@ export function SettingsDialog({
           )}
         </section>
 
+        <section>
+          <h3 className="mb-2 font-mono text-[10.5px] font-medium tracking-wider text-muted uppercase">Privacy & public links</h3>
+          <p className="mb-2 text-xs text-muted">Anyone with a public link can download the file without signing in. Revoke links below to stop future access.</p>
+          {shareError && <p role="alert" className="text-xs text-danger">{shareError}</p>}
+          {!shareError && shares.length === 0 && <p className="text-xs text-muted">No public links found.</p>}
+          {shares.map(item => <div key={item.share.token} className="flex items-center gap-2 border-b border-line py-2 text-xs"><span className="min-w-0 flex-1 truncate">{item.file.name}</span><button type="button" disabled={!!revoking} onClick={() => void revoke(item.share.token)} className="text-danger underline disabled:opacity-50">{revoking === item.share.token ? 'Revoking…' : 'Revoke'}</button></div>)}
+        </section>
         <section>
           <h3 className="mb-2 font-mono text-[10.5px] font-medium tracking-wider text-muted uppercase">
             Appearance

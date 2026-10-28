@@ -225,3 +225,37 @@ npm ci && npm run build && npm start   # serves on :3000
 | `npm start` | Serve the production build |
 | `npm run typecheck` | TypeScript checks |
 | `npm run lint` | ESLint (if configured) |
+
+### Privacy and production security
+
+Public file links are enabled. Anyone with an unprotected link (including an existing link
+created before sharing was disabled) can download its file without signing in.
+Password-protected links also require the share password.
+Create file links from File details or folder links from a folder’s action menu, optionally set an expiry or password, and revoke links in
+Settings → Privacy & public links. Revocation cannot recall previously downloaded
+copies. Folder links are read-only and include all current and future files in
+the folder and its subfolders; they stop working if the folder is renamed or
+deleted. Password-protected links require a password of at least 12 characters.
+The password-attempt throttle is per process, so production deployments need
+a shared rate limiter at the hosting firewall. Strict maximum-download counts
+are not supported: Telegram directory writes are not atomic across instances.
+Keep the Telegram storage chat private: its members and anyone with
+bot credentials may access stored content directly. Files are **not end-to-end
+encrypted** by Tellynas.
+
+Production sign-in requires explicit `APP_USERNAME`, an `APP_PASSWORD` of at
+least 12 characters, and an independent `AUTH_SECRET` of at least 32 characters
+(generate one with `openssl rand -hex 32`). Use HTTPS, unique high-entropy
+credentials, and protect deployment and Telegram credentials. Changing the
+password or signing secret invalidates existing sessions. The built-in login
+throttle is per process, not a distributed brute-force defense; use a trusted
+reverse proxy or hosting firewall with persistent rate limiting. Review your
+hosting and Telegram account security as well. No configuration can guarantee
+protection against every attack.
+
+The Images view groups by upload date and treats existing folders as albums;
+use the favorites and folder filters to narrow the gallery. Duplicate warnings
+compare filenames and sizes, not file content, so matches are only possible
+duplicates. Thumbnails are generated on demand and cached in server
+memory; the first request still fetches the original, and serverless instances
+may discard their cache. Large or unsupported image formats use the original.

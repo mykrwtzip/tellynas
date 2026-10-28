@@ -30,7 +30,7 @@ export async function GET(request: Request, context: RouteContext) {
         status: 304,
         headers: {
           ETag: etag,
-          'Cache-Control': 'private, max-age=3600',
+          'Cache-Control': 'private, no-store',
         },
       });
     }
@@ -43,7 +43,9 @@ export async function GET(request: Request, context: RouteContext) {
         ? `${file.mime.split(';')[0]}; charset=utf-8`
         : file.mime || 'application/octet-stream',
       'Content-Disposition': 'inline',
-      'Cache-Control': 'private, max-age=3600',
+      'Content-Security-Policy': "sandbox; default-src 'none'",
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, no-store',
       ETag: etag,
       'Accept-Ranges': 'bytes',
     };

@@ -14,16 +14,18 @@ export async function GET(_request: Request) {
 
     const result = await Promise.all(
       shares.map(async (share) => {
-        const file = await getStoredFile(share.targetId);
-        if (!file) return null;
+        const file = share.targetType === 'folder' ? null : await getStoredFile(share.targetId);
+
         return {
           share: {
             token: share.token,
             createdAt: share.createdAt,
             expiresAt: share.expiresAt,
+            passwordProtected: Boolean(share.passwordHash),
+            targetType: share.targetType || 'file',
           },
-          file: { id: file.id, name: file.name, size: file.size, mime: file.mime },
-          downloadUrl: `/api/share/${share.token}/download`,
+          file: file ? { id: file.id, name: file.name, size: file.size, mime: file.mime } : { id: share.targetId, name: share.targetType === 'folder' ? `Folder: /${share.targetId}` : 'Unavailable file', size: 0, mime: '' },
+          downloadUrl: `/share/${share.token}`,
         };
       }),
     );

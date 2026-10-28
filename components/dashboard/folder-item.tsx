@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ChevronRight, Folder, PencilLine, Trash2 } from 'lucide-react';
+import { ChevronRight, Folder, Link, PencilLine, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { formatBytes } from '@/lib/format';
 import { Menu, type MenuItem } from '@/components/ui';
@@ -15,6 +15,7 @@ type FolderItemProps = {
   onOpen: () => void;
   onRename: () => void;
   onDelete: () => void;
+  onShare: () => void;
   onDropFiles: (fileIds: string[], targetPath: string) => void;
   onContextMenu?: (event: React.MouseEvent, items: MenuItem[], title: string) => void;
 };
@@ -27,6 +28,7 @@ export function FolderCard({
   onOpen,
   onRename,
   onDelete,
+  onShare,
   onDropFiles,
   onContextMenu,
 }: FolderItemProps) {
@@ -38,6 +40,11 @@ export function FolderCard({
       icon: <ChevronRight className="size-3.5" />,
       shortcut: '⏎',
       onSelect: onOpen,
+    },
+    {
+      label: 'Share folder',
+      icon: <Link className="size-3.5" />,
+      onSelect: onShare,
     },
     {
       label: 'Rename',

@@ -80,5 +80,5 @@ export const publicRuntimeConfig = () => ({
   botCount: appConfig.botTokens.length,
   // Never leak the real password — only whether the default is still in use.
   usingDefaultPassword: appConfig.appPassword === 'changeme',
-  defaultUsername: appConfig.appUsername,
+  defaultUsername: process.env.NODE_ENV === 'production' ? '' : appConfig.appUsername,
 });

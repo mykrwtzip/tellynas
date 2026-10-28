@@ -4,6 +4,7 @@ import {
   createSessionToken,
   credentialsAreValid,
   sessionCookieOptions,
+  securityConfigured,
 } from '@/lib/auth';
 import { jsonError } from '@/lib/api';
 
@@ -32,6 +33,7 @@ function recordAttempt(ip: string) {
 }
 
 export async function POST(request: Request) {
+  if (!securityConfigured()) return jsonError('Server security is not configured. Set APP_USERNAME, a password of at least 12 characters, and an independent AUTH_SECRET of at least 32 characters.', 503);
   const ip =
     request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
     request.headers.get('x-real-ip') ||

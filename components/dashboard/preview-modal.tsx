@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   ChevronLeft,
@@ -51,6 +51,7 @@ export function PreviewModal({
   const [loadingText, setLoadingText] = useState(false);
   const [copied, setCopied] = useState(false);
   const [zoomed, setZoomed] = useState(false);
+  const swipeStart = useRef<{ x: number; y: number } | null>(null);
 
   const kind = file ? kindFromName(file.name, file.mime) : 'other';
   const isText = kind === 'text' || kind === 'code';
@@ -120,7 +121,10 @@ export function PreviewModal({
   };
 
   return (
-    <div className="animate-fade-in fixed inset-0 z-50 flex flex-col bg-zinc-950/92 text-zinc-100 backdrop-blur-md">
+    <div className="animate-fade-in fixed inset-0 z-50 flex flex-col bg-zinc-950/92 text-zinc-100 backdrop-blur-md"
+      onTouchStart={e => { if (e.touches.length === 1 && !(e.target as HTMLElement).closest('button, a')) swipeStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; else swipeStart.current = null; }}
+      onTouchEnd={e => { const start = swipeStart.current; swipeStart.current = null; if (!start || !canNavigate || kind !== 'image' || zoomed || !e.changedTouches.length) return; const dx = e.changedTouches[0].clientX - start.x; const dy = e.changedTouches[0].clientY - start.y; if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) onNavigate(dx < 0 ? 1 : -1); }}
+      onTouchCancel={() => { swipeStart.current = null; }}>
       {/* Top stage bar */}
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-white/10 px-4">
         <div className="min-w-0 flex-1">

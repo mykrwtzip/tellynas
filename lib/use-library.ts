@@ -33,7 +33,6 @@ const initialState: LibraryState = {
 };
 
 const STORAGE_SNAPSHOT_KEY = 'tellynas:snapshot:v1';
-const STORAGE_SNAPSHOT_TTL = 1000 * 60 * 60 * 24; // 24h stale cache for instant paint
 
 function ensureAncestors(folders: FolderEntry[], folderPath: string): FolderEntry[] {
   if (!folderPath) return folders;
@@ -52,36 +51,6 @@ function ensureAncestors(folders: FolderEntry[], folderPath: string): FolderEntr
   return additions.length > 0 ? [...folders, ...additions] : folders;
 }
 
-function tryLoadCachedSnapshot(): LibraryState | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_SNAPSHOT_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { files: StoredFile[]; folders: FolderEntry[]; ts: number };
-    if (!parsed?.files || !Array.isArray(parsed.files) || Date.now() - parsed.ts > STORAGE_SNAPSHOT_TTL) return null;
-    return {
-      files: parsed.files,
-      folders: parsed.folders ?? [],
-      loading: false,
-      refreshing: true, // will revalidate in background
-      error: null,
-      lastSyncedAt: parsed.ts,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function persistSnapshot(files: StoredFile[], folders: FolderEntry[]) {
-  try {
-    // Keep snapshot small: strip heavy chunks? keep them – needed for preview metadata.
-    // Cap at 2000 files to avoid localStorage quota (5MB).
-    const cappedFiles = files.length > 2000 ? files.slice(0, 2000) : files;
-    localStorage.setItem(STORAGE_SNAPSHOT_KEY, JSON.stringify({ files: cappedFiles, folders, ts: Date.now() }));
-  } catch {
-    /* quota exceeded – ignore */
-  }
-}
-
 export function useLibrary() {
   const [state, setState] = useState<LibraryState>(initialState);
   const stateRef = useRef<LibraryState>(initialState);
@@ -96,11 +65,8 @@ export function useLibrary() {
 
   useEffect(() => {
     mounted.current = true;
-    // Attempt to hydrate from local cache for instant paint (fix “don't fetched library” perception)
-    const cached = tryLoadCachedSnapshot();
-    if (cached && cached.files.length > 0) {
-      setState(cached);
-    }
+    // Remove snapshots created by older versions; filenames are private too.
+    try { localStorage.removeItem(STORAGE_SNAPSHOT_KEY); } catch {}
     return () => {
       mounted.current = false;
       if (retryTimer.current) window.clearTimeout(retryTimer.current);
@@ -137,7 +103,6 @@ export function useLibrary() {
           error: null,
           lastSyncedAt: Date.now(),
         });
-        persistSnapshot(data.files, nextFolders);
       } catch (error) {
         if (!mounted.current) return;
         const message =
@@ -235,8 +200,6 @@ export function useLibrary() {
         folders: ensureAncestors(current.folders, file.folder),
         lastSyncedAt: Date.now(),
       };
-      // Persist eagerly so reload still shows the file even before next server revalidation
-      persistSnapshot(next.files, next.folders);
       return next;
     });
   }, []);

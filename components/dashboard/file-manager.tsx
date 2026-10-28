@@ -43,6 +43,7 @@ import {
   IconButton,
   Kbd,
   Menu,
+  Modal,
   type MenuItem,
 } from '@/components/ui';
 import { useTheme } from '@/components/theme';
@@ -54,6 +55,8 @@ import { UploadPanel } from './upload-panel';
 import { PreviewModal } from './preview-modal';
 import { CommandPalette } from './command-palette';
 import { InspectorPanel } from './inspector-panel';
+import { PhotoGallery } from './photo-gallery';
+import { PublicShare } from './public-share';
 import {
   ConfirmDialog,
   MoveDialog,
@@ -111,9 +114,9 @@ export function FileManager({ username, runtime }: Props) {
   const [commandOpen, setCommandOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shareFolder, setShareFolder] = useState<string | null>(null);
+  const [bulkStarring, setBulkStarring] = useState(false);
   const [archivedFiles, setArchivedFiles] = useState<StoredFile[]>([]);
-  const [shares, setShares] = useState<Awaited<ReturnType<typeof api.shares>>>([]);
-  const [shareBusy, setShareBusy] = useState(false);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<{
     ok: boolean;
@@ -253,47 +256,18 @@ export function FileManager({ username, runtime }: Props) {
     return null;
   }, [inspectedId, library.files, selection]);
 
-  const currentShare = useMemo(() => {
-    if (!inspectedFile) return null;
-    return shares.find((entry) => entry.file.id === inspectedFile.id) ?? null;
-  }, [inspectedFile, shares]);
-
-  const handleCreateShare = async (expiresAt?: number) => {
-    if (!inspectedFile) return;
-    setShareBusy(true);
-    try {
-      await api.createShare(inspectedFile.id, { expiresAt });
-      const updated = await api.shares();
-      setShares(updated);
-      toast.success('Share link created');
-    } catch (error) {
-      toast.error('Could not create share link', (error as Error).message);
-    } finally {
-      setShareBusy(false);
-    }
-  };
-
-  const handleRevokeShare = async (token: string) => {
-    setShareBusy(true);
-    try {
-      await api.revokeShare(token);
-      setShares(shares.filter((entry) => entry.share.token !== token));
-      toast.success('Share link revoked');
-    } catch (error) {
-      toast.error('Could not revoke link', (error as Error).message);
-    } finally {
-      setShareBusy(false);
-    }
-  };
-
   /* -------------------------------- uploads -------------------------------- */
+
+  const uploadRefreshTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (uploadRefreshTimer.current !== null) window.clearTimeout(uploadRefreshTimer.current); }, []);
 
   const handleUploaded = useCallback(
     (file: StoredFile) => {
       library.upsertFile(file);
       toast.success(`Uploaded ${file.name}`, formatBytes(file.size));
       // Background revalidation ensures cross-process directory merge is reflected (race-free upload visible after 1s)
-      window.setTimeout(() => void library.refresh(), 1200);
+      if (uploadRefreshTimer.current !== null) window.clearTimeout(uploadRefreshTimer.current);
+      uploadRefreshTimer.current = window.setTimeout(() => void library.refresh(), 1200);
     },
     [library, toast],
   );
@@ -310,7 +284,7 @@ export function FileManager({ username, runtime }: Props) {
     onUploaded: handleUploaded,
     onError: handleUploadError,
     // Adaptive: more bots => more parallelism, but capped to respect browser/Vercel limits
-    maxConcurrent: Math.min(4, Math.max(2, runtime.botCount || 2)),
+    maxConcurrent: 4,
     chunkConcurrency: Math.min(8, Math.max(4, (runtime.botCount || 1) * 2)),
   });
 
@@ -321,10 +295,6 @@ export function FileManager({ username, runtime }: Props) {
     }
   }, [view]);
 
-  // Load public share links so the inspector can show/revoke them.
-  useEffect(() => {
-    void api.shares().then(setShares).catch(() => undefined);
-  }, []);
 
   // Check storage connection on mount so the user sees immediately if bots
   // are offline / Telegram isn't configured (uploads would fail, files go "not found").
@@ -359,13 +329,21 @@ export function FileManager({ username, runtime }: Props) {
     (files: File[] | FileList) => {
       const list = Array.from(files);
       if (list.length === 0) return;
+      const seen = new Set(library.files.map(file => `${file.name.toLowerCase()}\0${file.size}`));
+      const possible = list.filter(file => {
+        const key = `${file.name.toLowerCase()}\0${file.size}`;
+        const duplicate = seen.has(key);
+        seen.add(key);
+        return duplicate;
+      });
+      if (possible.length && !window.confirm(`${possible.length} file(s) have the same name and size as another file. They may be duplicates. Upload anyway?`)) return;
       uploads.addFiles(list, targetUploadFolder);
       toast.info(
         `Uploading ${list.length} ${list.length === 1 ? 'file' : 'files'}`,
         `/${targetUploadFolder}`,
       );
     },
-    [targetUploadFolder, toast, uploads],
+    [targetUploadFolder, toast, uploads, library.files],
   );
 
   /* ------------------------------ interactions ----------------------------- */
@@ -720,8 +698,8 @@ export function FileManager({ username, runtime }: Props) {
   }, [layout, sort, inspectorOpen]);
 
   const selectedFiles = useMemo(
-    () => library.files.filter((file) => selection.has(file.id)),
-    [library.files, selection],
+    () => (view === 'archive' ? archivedFiles : library.files).filter((file) => selection.has(file.id)),
+    [view, archivedFiles, library.files, selection],
   );
 
   // Global keyboard shortcuts & clipboard paste upload
@@ -1333,6 +1311,7 @@ export function FileManager({ username, runtime }: Props) {
                     trigger={<MoreHorizontal className="size-4" />}
                     className="size-7 rounded-lg border border-line bg-surface"
                     items={[
+                      { label: 'Share this folder', onSelect: () => setShareFolder(folder) },
                       {
                         label: 'Rename this folder',
                         icon: <FolderOpen className="size-3.5" />,
@@ -1381,6 +1360,7 @@ export function FileManager({ username, runtime }: Props) {
                       count={node.totalCount}
                       totalBytes={node.totalBytes}
                       onOpen={() => navigateFolder(node.path)}
+                      onShare={() => setShareFolder(node.path)}
                       onRename={() => {
                         ensureNoDialog();
                         setRenameTarget({ type: 'folder', value: node.path });
@@ -1496,6 +1476,8 @@ export function FileManager({ username, runtime }: Props) {
                     </div>
                   )}
                 </div>
+              ) : layout === 'grid' && view === 'images' ? (
+                <PhotoGallery files={visibleFiles} selection={selection} handlers={handlers} />
               ) : layout === 'grid' ? (
                 <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
                   {visibleFiles.map((file) => (
@@ -1626,17 +1608,33 @@ export function FileManager({ username, runtime }: Props) {
                 Move
               </Button>
 
-              <Button
+              {view !== 'archive' && <Button
                 size="sm"
                 variant="ghost"
                 icon={<Download className="size-3.5" />}
                 onClick={() => {
-                  selectedFiles.forEach((file) => download(file, true));
-                  toast.info(`Downloading ${selectedFiles.length} files`);
+                  if (selectedFiles.length > 100) { toast.error('Select at most 100 files per ZIP download'); return; }
+                  const form = document.createElement('form');
+                  form.method = 'POST'; form.action = '/api/files/bulk-download';
+                  const field = document.createElement('input'); field.type = 'hidden'; field.name = 'ids'; field.value = JSON.stringify(selectedFiles.map(file => file.id));
+                  form.appendChild(field); document.body.appendChild(form); form.submit(); form.remove();
+                  toast.info(`Preparing ${selectedFiles.length} files as a ZIP`);
                 }}
               >
                 Download
-              </Button>
+              </Button>}
+
+              {view !== 'archive' && <Button size="sm" variant="ghost" icon={<Star className="size-3.5" />} disabled={bulkStarring} onClick={async () => {
+                setBulkStarring(true);
+                let failed = 0;
+                for (const file of selectedFiles.filter(item => !item.starred)) {
+                  try { const result = await api.patchFile(file.id, { starred: true }); library.upsertFile(result.file); }
+                  catch { failed++; }
+                }
+                setBulkStarring(false);
+                if (failed) toast.error('Some favorites could not be saved', `${failed} failed`);
+                else toast.success('Added selection to favorites');
+              }}>{bulkStarring ? 'Saving…' : 'Favorite'}</Button>}
 
               {view === 'archive' ? (
                 <>
@@ -1729,18 +1727,6 @@ export function FileManager({ username, runtime }: Props) {
                 setDeleteTarget({ type: 'file', file });
               }}
               onRestore={restoreFile}
-              share={
-                currentShare
-                  ? {
-                      token: currentShare.share.token,
-                      downloadUrl: currentShare.downloadUrl,
-                      expiresAt: currentShare.share.expiresAt,
-                    }
-                  : null
-              }
-              onCreateShare={handleCreateShare}
-              onRevokeShare={handleRevokeShare}
-              shareBusy={shareBusy}
               onNavigateFolder={navigateFolder}
             />
           </div>
@@ -1773,18 +1759,6 @@ export function FileManager({ username, runtime }: Props) {
                   setDeleteTarget({ type: 'file', file });
                 }}
                 onRestore={restoreFile}
-              share={
-                currentShare
-                  ? {
-                      token: currentShare.share.token,
-                      downloadUrl: currentShare.downloadUrl,
-                      expiresAt: currentShare.share.expiresAt,
-                    }
-                  : null
-              }
-              onCreateShare={handleCreateShare}
-              onRevokeShare={handleRevokeShare}
-              shareBusy={shareBusy}
               onNavigateFolder={navigateFolder}
               />
             </div>
@@ -1940,6 +1914,10 @@ export function FileManager({ username, runtime }: Props) {
         onConfirm={confirmDelete}
         onClose={() => setDeleteTarget(null)}
       />
+
+      <Modal open={shareFolder !== null} onClose={() => setShareFolder(null)} title="Share folder" description={shareFolder ? `/${shareFolder}` : ''} size="sm">
+        {shareFolder && <PublicShare key={shareFolder} fileId={shareFolder} targetType="folder" />}
+      </Modal>
 
       <SettingsDialog
         open={settingsOpen}
