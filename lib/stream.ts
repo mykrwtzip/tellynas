@@ -31,8 +31,10 @@ async function* iterateRange(
 
   // Prefetch several chunk streams ahead so multi-part downloads and media
   // playback stay smooth without dead-air pauses between slices. More bots =
-  // more parallel fetches.
-  const PREFETCH_AHEAD = 3;
+  // more parallel fetches. 6 is the sweet spot: stays under Vercel's 10
+  // concurrent external-fetch limit while keeping playback fed even on 200ms
+  // Telegram tails.
+  const PREFETCH_AHEAD = Math.min(6, needed.length);
   const prefetchWindow: ReturnType<ChunkFetcher>[] = [];
 
   // Prime the prefetch window with the first PREFETCH_AHEAD chunks.

@@ -48,9 +48,18 @@ export type SystemInfo = {
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  // Merge external signal if provided
+  const signal = init?.signal ?? controller.signal;
+  // If caller passed a signal, wire abort forwarding
+  if (init?.signal) {
+    controller.signal.addEventListener('abort', () => controller.abort());
+  }
   try {
     response = await fetch(url, {
       ...init,
+      signal: controller.signal,
       headers: {
         ...(init?.body && !(init.body instanceof FormData)
           ? { 'Content-Type': 'application/json' }
@@ -60,8 +69,13 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       credentials: 'same-origin',
       cache: 'no-store',
     });
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new ApiError('Request timed out. The server may be busy — retrying.', 504);
+    }
     throw new ApiError('Cannot reach the server. Check your connection.', 0);
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (response.status === 204) return undefined as T;

@@ -292,6 +292,8 @@ export function FileManager({ username, runtime }: Props) {
     (file: StoredFile) => {
       library.upsertFile(file);
       toast.success(`Uploaded ${file.name}`, formatBytes(file.size));
+      // Background revalidation ensures cross-process directory merge is reflected (race-free upload visible after 1s)
+      window.setTimeout(() => void library.refresh(), 1200);
     },
     [library, toast],
   );
@@ -307,8 +309,9 @@ export function FileManager({ username, runtime }: Props) {
     chunkSize: runtime.chunkSize,
     onUploaded: handleUploaded,
     onError: handleUploadError,
-    maxConcurrent: Math.min(6, runtime.botCount * 2 || 6),
-    chunkConcurrency: Math.min(8, runtime.botCount * 4 || 8),
+    // Adaptive: more bots => more parallelism, but capped to respect browser/Vercel limits
+    maxConcurrent: Math.min(4, Math.max(2, runtime.botCount || 2)),
+    chunkConcurrency: Math.min(8, Math.max(4, (runtime.botCount || 1) * 2)),
   });
 
   // Load the Archive when the user opens it.
@@ -1048,48 +1051,34 @@ export function FileManager({ username, runtime }: Props) {
         }}
       >
 
-        {/* Connection status banner */}
-        {(connectionStatus !== null && !connectionStatus.ok) || connectionChecking ? (
+        {/* Connection status banner — only shows after check completes to avoid false “offline” flash */}
+        {connectionStatus && !connectionStatus.ok ? (
           <div className="px-3.5 py-2">
-            <div
-              className={cn(
-                'flex items-center gap-2 rounded-lg border px-3 py-2 text-[12.5px]',
-                connectionStatus
-                  ? 'border-danger/25 bg-danger-soft text-danger'
-                  : 'border-line-strong bg-surface-2/50 text-muted',
-              )}
-            >
-              {connectionChecking ? (
-                <>
-                  <RefreshCw className="size-3.5 shrink-0 animate-spin" />
-                  <span>Checking storage connection…</span>
-                </>
-              ) : connectionStatus?.ok === false ? (
-                <>
-                  <AlertTriangle className="size-3.5 shrink-0" />
-                  <span className="flex-1 min-w-0">
-                    {connectionStatus.detail}
-                    {connectionStatus.botCount === 0 && (
-                      <span className="block mt-0.5 font-mono text-[11px]">
-                        No Telegram bots configured — uploads go to temporary demo
-                        storage and will be lost on redeploy. Add
-                        TELEGRAM_BOT_TOKEN(S) and TELEGRAM_CHAT_ID in .env.local.
-                      </span>
-                    )}
+            <div className="flex items-center gap-2 rounded-lg border border-danger/25 bg-danger-soft px-3 py-2 text-[12.5px] text-danger">
+              <AlertTriangle className="size-3.5 shrink-0" />
+              <span className="flex-1 min-w-0">
+                {connectionStatus.detail}
+                {connectionStatus.botCount === 0 && (
+                  <span className="block mt-0.5 font-mono text-[11px]">
+                    No Telegram bots configured — uploads go to temporary demo storage and will be lost on redeploy.
+                    Add TELEGRAM_BOT_TOKEN(S) and TELEGRAM_CHAT_ID in .env.local and restart the server.
                   </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={checkConnection}
-                    disabled={connectionChecking}
-                  >
-                    Retry
-                  </Button>
-                </>
-              ) : null}
+                )}
+              </span>
+              <Button size="sm" variant="ghost" onClick={checkConnection} disabled={connectionChecking}>
+                Retry
+              </Button>
+            </div>
+          </div>
+        ) : connectionChecking && !connectionStatus ? (
+          <div className="px-3.5 py-2">
+            <div className="flex items-center gap-2 rounded-lg border border-line-strong bg-surface-2/50 px-3 py-2 text-[12.5px] text-muted">
+              <RefreshCw className="size-3.5 shrink-0 animate-spin" />
+              <span>Checking storage connection…</span>
             </div>
           </div>
         ) : null}
+        {runtime.demo && connectionStatus?.ok === false && connectionStatus.botCount === 0 ? null : null}
 
         {/* Top bar */}
         <header className="z-20 flex h-13 shrink-0 items-center justify-between gap-2 border-b border-line bg-bg/85 px-3 backdrop-blur-md sm:px-5">
