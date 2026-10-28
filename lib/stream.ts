@@ -29,18 +29,31 @@ async function* iterateRange(
 
   if (needed.length === 0) return;
 
-  // Prefetch the next chunk stream while streaming the current one so multi-part
-  // downloads and media playback transition seamlessly without dead-air pauses.
-  let nextPromise: ReturnType<ChunkFetcher> | null = fetchChunk(needed[0].chunk);
+  // Prefetch several chunk streams ahead so multi-part downloads and media
+  // playback stay smooth without dead-air pauses between slices. More bots =
+  // more parallel fetches.
+  const PREFETCH_AHEAD = 3;
+  const prefetchWindow: ReturnType<ChunkFetcher>[] = [];
+
+  // Prime the prefetch window with the first PREFETCH_AHEAD chunks.
+  for (let i = 0; i < Math.min(PREFETCH_AHEAD, needed.length); i += 1) {
+    prefetchWindow.push(fetchChunk(needed[i].chunk));
+  }
 
   try {
     for (let idx = 0; idx < needed.length; idx += 1) {
       const current = needed[idx];
-      const currentFetch = nextPromise ?? fetchChunk(current.chunk);
-      nextPromise =
-        idx + 1 < needed.length ? fetchChunk(needed[idx + 1].chunk) : null;
-      // Prevent unhandled rejection if current stream cancels before nextPromise is awaited.
-      nextPromise?.catch(() => undefined);
+
+      // The current chunk's fetch is at the front of the window.
+      const currentFetch = prefetchWindow.shift() ?? fetchChunk(current.chunk);
+
+      // Refill the window so we always have PREFETCH_AHEAD chunks in flight.
+      const nextIdx = idx + PREFETCH_AHEAD;
+      if (nextIdx < needed.length) {
+        prefetchWindow.push(fetchChunk(needed[nextIdx].chunk));
+      }
+      // Prevent unhandled rejections for any prefetched stream we don't consume.
+      prefetchWindow.forEach((p) => p.catch(() => undefined));
 
       const { stream } = await currentFetch;
       const reader = stream.getReader();
@@ -71,11 +84,9 @@ async function* iterateRange(
       }
     }
   } finally {
-    if (nextPromise) {
-      nextPromise
-        .then(({ stream }) => stream.cancel().catch(() => undefined))
-        .catch(() => undefined);
-    }
+    prefetchWindow.forEach((p) =>
+      p.then(({ stream }) => stream.cancel().catch(() => undefined)).catch(() => undefined),
+    );
   }
 }
 
