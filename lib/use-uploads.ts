@@ -24,7 +24,11 @@ export type UploadItem = {
   error?: string;
 };
 
-type InternalItem = UploadItem & { file: File };
+type InternalItem = UploadItem & {
+  file: File;
+  /** Chunk indexes that have already been stored (for resumable retries). */
+  uploadedChunks: Set<number>;
+};
 
 type Options = {
   chunkSize: number;
@@ -36,9 +40,9 @@ type Options = {
   chunkConcurrency?: number;
 };
 
-const DEFAULT_MAX_CONCURRENT = 6;
-const DEFAULT_CHUNK_CONCURRENCY = 8;
-const MAX_RETRIES = 2;
+const DEFAULT_MAX_CONCURRENT = 10;
+const DEFAULT_CHUNK_CONCURRENCY = 16;
+const MAX_RETRIES = 3;
 
 let itemCounter = 0;
 
@@ -150,12 +154,24 @@ export function useUploadQueue({
             chunks.push(singleResult.chunk);
           }
         } else {
-          // Parallel slice upload for multi-part files.
+          // Parallel slice upload for multi-part files. Skips chunks already
+          // stored (resumable retry) so a failed large file doesn't restart
+          // from byte zero.
           let nextIndex = 0;
           const uploadWorker = async () => {
             while (nextIndex < totalChunks) {
               const index = nextIndex;
               nextIndex += 1;
+
+              // Resume: skip chunks we already stored successfully.
+              if (item.uploadedChunks.has(index)) {
+                loadedPerChunk[index] = Math.min(
+                  item.size - index * chunkBytes,
+                  chunkBytes,
+                );
+                updateProgress();
+                continue;
+              }
 
               const start = index * chunkBytes;
               const end = Math.min(start + chunkBytes, item.size);
@@ -180,6 +196,7 @@ export function useUploadQueue({
                     },
                   });
                   loadedPerChunk[index] = blob.size;
+                  item.uploadedChunks.add(index);
                   chunks.push(result.chunk);
                   updateProgress();
                   break;
@@ -272,6 +289,7 @@ export function useUploadQueue({
           progress: 0,
           uploadedBytes: 0,
           file,
+          uploadedChunks: new Set<number>(),
         });
       });
       sync(true);
@@ -302,6 +320,7 @@ export function useUploadQueue({
       item.status = 'queued';
       item.progress = 0;
       item.uploadedBytes = 0;
+      item.uploadedChunks.clear();
       item.error = undefined;
       sync(true);
       pump();

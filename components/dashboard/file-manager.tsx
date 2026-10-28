@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowDownAZ,
   ArrowUp,
@@ -114,6 +115,12 @@ export function FileManager({ username, runtime }: Props) {
   const [shares, setShares] = useState<Awaited<ReturnType<typeof api.shares>>>([]);
   const [shareBusy, setShareBusy] = useState(false);
   const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<{
+    ok: boolean;
+    detail: string;
+    botCount: number;
+  } | null>(null);
+  const [connectionChecking, setConnectionChecking] = useState(false);
   const [draggingExternal, setDraggingExternal] = useState(false);
   const [crumbDropTarget, setCrumbDropTarget] = useState<string | null>(null);
 
@@ -315,6 +322,33 @@ export function FileManager({ username, runtime }: Props) {
   useEffect(() => {
     void api.shares().then(setShares).catch(() => undefined);
   }, []);
+
+  // Check storage connection on mount so the user sees immediately if bots
+  // are offline / Telegram isn't configured (uploads would fail, files go "not found").
+  const checkConnection = useCallback(async () => {
+    setConnectionChecking(true);
+    try {
+      const sys = await api.system();
+      setSystem(sys);
+      setConnectionStatus({
+        ok: sys.connection.ok,
+        detail: sys.connection.detail,
+        botCount: runtime.botCount,
+      });
+    } catch {
+      setConnectionStatus({
+        ok: false,
+        detail: 'Could not reach the server to check storage connection.',
+        botCount: runtime.botCount,
+      });
+    } finally {
+      setConnectionChecking(false);
+    }
+  }, [runtime.botCount]);
+
+  useEffect(() => {
+    void checkConnection();
+  }, [checkConnection]);
 
   const targetUploadFolder = view === 'all' ? folder : '';
 
@@ -1013,6 +1047,50 @@ export function FileManager({ username, runtime }: Props) {
           if (event.dataTransfer?.files?.length) addFiles(event.dataTransfer.files);
         }}
       >
+
+        {/* Connection status banner */}
+        {(connectionStatus !== null && !connectionStatus.ok) || connectionChecking ? (
+          <div className="px-3.5 py-2">
+            <div
+              className={cn(
+                'flex items-center gap-2 rounded-lg border px-3 py-2 text-[12.5px]',
+                connectionStatus
+                  ? 'border-danger/25 bg-danger-soft text-danger'
+                  : 'border-line-strong bg-surface-2/50 text-muted',
+              )}
+            >
+              {connectionChecking ? (
+                <>
+                  <RefreshCw className="size-3.5 shrink-0 animate-spin" />
+                  <span>Checking storage connection…</span>
+                </>
+              ) : connectionStatus?.ok === false ? (
+                <>
+                  <AlertTriangle className="size-3.5 shrink-0" />
+                  <span className="flex-1 min-w-0">
+                    {connectionStatus.detail}
+                    {connectionStatus.botCount === 0 && (
+                      <span className="block mt-0.5 font-mono text-[11px]">
+                        No Telegram bots configured — uploads go to temporary demo
+                        storage and will be lost on redeploy. Add
+                        TELEGRAM_BOT_TOKEN(S) and TELEGRAM_CHAT_ID in .env.local.
+                      </span>
+                    )}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={checkConnection}
+                    disabled={connectionChecking}
+                  >
+                    Retry
+                  </Button>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
         {/* Top bar */}
         <header className="z-20 flex h-13 shrink-0 items-center justify-between gap-2 border-b border-line bg-bg/85 px-3 backdrop-blur-md sm:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-1">

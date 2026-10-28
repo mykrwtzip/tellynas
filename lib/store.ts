@@ -46,7 +46,11 @@ let legacyMigrationAttempted = false;
 let writeQueue: Promise<unknown> = Promise.resolve();
 
 function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
-  const next = writeQueue.then(fn, fn);
+  const next = writeQueue.then(async () => {
+    const result = await fn();
+    invalidateDirectoryScanCache();
+    return result;
+  });
   writeQueue = next.catch(() => undefined);
   return next;
 }
@@ -64,6 +68,39 @@ function readDirectoryShared(driver: StorageDriver) {
     });
   }
   return inFlightDirectoryRead;
+}
+
+/**
+ * Short-lived cache for full directory scans. `finalize` (called on every
+ * upload) re-scans the whole library; caching the scan for a couple of seconds
+ * makes bulk uploads dramatically faster because consecutive uploads reuse the
+ * same index instead of re-reading every sidecar from Telegram.
+ */
+const DIRECTORY_SCAN_CACHE_TTL = 2000; // ms
+let directoryScanCache: {
+  result: Awaited<ReturnType<typeof scanDriverStorage>>;
+  timestamp: number;
+} | null = null;
+
+function isDirectoryScanCacheFresh() {
+  return (
+    directoryScanCache !== null &&
+    Date.now() - directoryScanCache.timestamp < DIRECTORY_SCAN_CACHE_TTL
+  );
+}
+
+function getDirectoryScanCache() {
+  return directoryScanCache?.result ?? null;
+}
+
+function setDirectoryScanCache(
+  result: Awaited<ReturnType<typeof scanDriverStorage>>,
+) {
+  directoryScanCache = { result, timestamp: Date.now() };
+}
+
+function invalidateDirectoryScanCache() {
+  directoryScanCache = null;
 }
 
 async function mapConcurrent<T, R>(
@@ -424,6 +461,13 @@ async function scanDriverStorage(
 }> {
   await ensureDemoSeeded(driver);
 
+  // Reuse a recent full-library scan so consecutive uploads (finalize) don't
+  // re-read every sidecar from Telegram on every request.
+  if (!options.freshRead) {
+    const cached = getDirectoryScanCache();
+    if (cached) return cached;
+  }
+
   let discovered = options.freshRead
     ? await driver.readDirectory()
     : await readDirectoryShared(driver);
@@ -454,7 +498,7 @@ async function scanDriverStorage(
     }
   }
 
-  return {
+  const result: Awaited<ReturnType<typeof scanDriverStorage>> = {
     index: {
       version: 1,
       files: [...filesById.values()],
@@ -463,6 +507,12 @@ async function scanDriverStorage(
     directory,
     directoryMessageId: discovered.messageId,
   };
+
+  if (!options.freshRead) {
+    setDirectoryScanCache(result);
+  }
+
+  return result;
 }
 
 /**
