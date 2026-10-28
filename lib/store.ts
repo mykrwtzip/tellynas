@@ -6,7 +6,11 @@
  *
  *  - redis : Upstash REST (best for serverless / multi-instance deployments)
  *  - file  : a JSON file on disk (self-hosted, local development)
- *  - memory: process memory (demo mode)
+ *  - memory: process memory (demo mode, or a read-only host with no Redis)
+ *
+ * Serverless hosts (Vercel, Lambda, Netlify) have a read-only, per-instance
+ * filesystem, so the file backend is skipped there and the index degrades to
+ * memory instead of throwing on every upload. Set Upstash Redis to persist.
  */
 
 import { promises as fs } from 'node:fs';
@@ -28,11 +32,35 @@ type AnyGlobal = typeof globalThis & {
 
 const globalState = () => globalThis as AnyGlobal;
 
-export const backendKind: BackendKind = appConfig.redisUrl
-  ? 'redis'
-  : useDemoDriver()
-    ? 'memory'
-    : 'file';
+function preferredBackend(): BackendKind {
+  if (appConfig.redisUrl) return 'redis';
+  if (useDemoDriver()) return 'memory';
+  // No writable, persistent disk on serverless hosts.
+  if (appConfig.serverless) return 'memory';
+  return 'file';
+}
+
+let activeBackend: BackendKind = preferredBackend();
+let warnedAboutVolatileIndex = false;
+
+/** Which index backend is actually in use (may degrade at runtime). */
+export const getIndexBackend = (): BackendKind => activeBackend;
+
+/** False when the index only lives in the memory of one server instance. */
+export const isIndexPersistent = (): boolean => activeBackend !== 'memory';
+
+function degradeToMemory(reason: unknown) {
+  if (activeBackend === 'memory') return;
+  activeBackend = 'memory';
+  if (!warnedAboutVolatileIndex) {
+    warnedAboutVolatileIndex = true;
+    console.warn(
+      '[tellynas] index storage is not writable — falling back to in-memory index.',
+      'Set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN to persist across restarts.',
+      reason,
+    );
+  }
+}
 
 const emptyIndex = (): StorageIndex => ({ version: 1, files: [], folders: [] });
 
@@ -65,13 +93,13 @@ async function redisCommand<T>(command: unknown[]): Promise<T | null> {
 
 async function loadIndex(): Promise<StorageIndex> {
   try {
-    if (backendKind === 'redis') {
+    if (activeBackend === 'redis') {
       const raw = await redisCommand<string>(['GET', INDEX_KEY]);
       if (!raw) return emptyIndex();
       return normalizeIndex(typeof raw === 'string' ? JSON.parse(raw) : raw);
     }
 
-    if (backendKind === 'file') {
+    if (activeBackend === 'file') {
       const raw = await fs.readFile(DATA_FILE, 'utf8');
       return normalizeIndex(JSON.parse(raw));
     }
@@ -86,15 +114,25 @@ async function loadIndex(): Promise<StorageIndex> {
 }
 
 async function persistIndex(index: StorageIndex): Promise<void> {
-  if (backendKind === 'redis') {
+  if (activeBackend === 'redis') {
     await redisCommand(['SET', INDEX_KEY, JSON.stringify(index)]);
     return;
   }
 
-  if (backendKind === 'file') {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    await fs.writeFile(DATA_FILE, JSON.stringify(index, null, 2), 'utf8');
-    return;
+  if (activeBackend === 'file') {
+    try {
+      await fs.mkdir(DATA_DIR, { recursive: true });
+      await fs.writeFile(DATA_FILE, JSON.stringify(index, null, 2), 'utf8');
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      if (['EROFS', 'EACCES', 'EPERM', 'ENOTSUP', 'ENOENT', 'ENOTDIR'].includes(code)) {
+        // Read-only filesystem (serverless): keep working, in memory.
+        degradeToMemory(error);
+      } else {
+        throw error;
+      }
+    }
   }
 
   globalState().__tellynasIndex = index;
@@ -192,7 +230,7 @@ async function ensureSeeded(index: StorageIndex): Promise<StorageIndex> {
 
   const shouldSeed =
     useDemoDriver() &&
-    backendKind === 'memory' &&
+    activeBackend === 'memory' &&
     index.files.length === 0 &&
     index.folders.length === 0;
   if (!shouldSeed) return index;

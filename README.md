@@ -104,7 +104,14 @@ network — handy for uptime monitors and for confirming a fresh Vercel deploy:
 {
   "status": "ok",
   "runtime": { "node": "v22.x", "environment": "production", "vercel": true },
-  "storage": { "driver": "telegram", "indexBackend": "redis", "chunkSizeMb": 8 },
+  "storage": {
+    "driver": "telegram",
+    "telegramConfigured": true,
+    "indexBackend": "redis",
+    "indexPersistent": true,
+    "serverless": true,
+    "chunkSizeMb": 4
+  },
   "config": { "usingDefaultPassword": false, "hasAuthSecret": true }
 }
 ```
@@ -118,7 +125,20 @@ downloads. Choose the index backend for your host:
 
 - **Self-hosted / Docker** → JSON file at `.data/index.json` (default)
 - **Vercel / serverless** → Upstash Redis REST (set both `UPSTASH_REDIS_REST_*` vars)
-- **Demo** → in-memory
+- **Demo, or a read-only host** → in-memory
+
+The backend is resolved at runtime: serverless hosts (detected via `VERCEL`,
+`AWS_LAMBDA_FUNCTION_NAME` or `NETLIFY`) — and any host where writing `.data/`
+fails (`EROFS`, `EACCES`, …) — automatically degrade to an in-memory index
+instead of throwing on every upload. The UI shows a **Not persistent** warning
+whenever that happens, because the list then resets when the instance restarts
+(the files themselves stay in Telegram).
+
+### Chunk size
+
+`TELEGRAM_CHUNK_MB` is clamped automatically: **4 MB** on serverless hosts
+(Vercel rejects bodies above ~4.5 MB before the handler runs) and **19 MB**
+elsewhere (the Bot API `getFile` ceiling).
 
 ### Notes and limits
 
@@ -137,9 +157,9 @@ downloads. Choose the index backend for your host:
 3. Deploy, then sign in at `/login`.
 
 The serverless filesystem is read-only, so with no Redis configured the index
-falls back to in-memory storage and resets on every cold start. Set
-`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` on Vercel.
-Keep `TELEGRAM_CHUNK_MB` at `4` or lower there (Vercel caps request bodies).
+falls back to in-memory storage and resets when the instance restarts. Set
+`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` on Vercel to keep it.
+Chunk size is clamped to 4 MB there automatically (Vercel caps bodies at ~4.5 MB).
 
 **Self-hosted**
 

@@ -276,6 +276,7 @@ export function SettingsDialog({
   system,
   sessionUsername,
   indexBackend,
+  indexPersistent,
   stats,
   onRefreshSystem,
   onLogout,
@@ -285,6 +286,7 @@ export function SettingsDialog({
   system: SystemInfo | null;
   sessionUsername: string | null;
   indexBackend: string;
+  indexPersistent: boolean;
   stats: { fileCount: number; folderCount: number; totalBytes: number; chunkCount: number };
   onRefreshSystem: () => void;
   onLogout: () => void;
@@ -306,7 +308,7 @@ export function SettingsDialog({
     {
       icon: <HardDrive className="size-4" />,
       label: 'Index backend',
-      value: indexBackend,
+      value: indexPersistent ? indexBackend : `${indexBackend} (volatile)`,
     },
     {
       icon: <Info className="size-4" />,
@@ -381,6 +383,14 @@ export function SettingsDialog({
               Missing environment variables:{' '}
               <code className="font-mono">{system.missingEnv.join(', ')}</code>. Uploads are
               simulated in memory until they are set.
+            </div>
+          )}
+          {!indexPersistent && (
+            <div className="mt-2 rounded-xl border border-warning/25 bg-warning/10 px-3.5 py-2.5 text-[12px] leading-relaxed text-warning">
+              The file index is not persistent on this host (read-only serverless disk).
+              Uploads work, but the list resets when the instance restarts. Set{' '}
+              <code className="font-mono">UPSTASH_REDIS_REST_URL</code> and{' '}
+              <code className="font-mono">UPSTASH_REDIS_REST_TOKEN</code> to keep it.
             </div>
           )}
           {system?.usingDefaultPassword && (

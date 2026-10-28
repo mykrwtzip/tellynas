@@ -16,8 +16,10 @@ export type SessionInfo = {
   authenticated: boolean;
   username: string | null;
   indexBackend: string;
+  indexPersistent: boolean;
   runtime: {
     demo: boolean;
+    serverless: boolean;
     telegramConfigured: boolean;
     missingEnv: string[];
     chunkSize: number;
@@ -37,6 +39,8 @@ export type ListResponse = {
 export type SystemInfo = {
   driver: 'telegram' | 'demo';
   indexBackend: string;
+  indexPersistent: boolean;
+  serverless: boolean;
   demo: boolean;
   connection: { ok: boolean; detail: string };
   chunkSizeMb: number;
