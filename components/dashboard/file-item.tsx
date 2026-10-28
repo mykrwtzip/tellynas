@@ -8,6 +8,7 @@ import {
   Info,
   PencilLine,
   Play,
+  RotateCcw,
   Star,
   StarOff,
   Trash2,
@@ -33,6 +34,7 @@ export type FileActionHandlers = {
   onRename: (file: StoredFile) => void;
   onMove: (file: StoredFile) => void;
   onDelete: (file: StoredFile) => void;
+  onRestore?: (file: StoredFile) => void;
   onToggleSelect: (file: StoredFile) => void;
   onNavigateFolder?: (folder: string) => void;
   onContextMenu?: (event: React.MouseEvent, items: MenuItem[], title: string) => void;
@@ -76,14 +78,32 @@ export function buildFileMenuItems(
       icon: <FolderInput className="size-3.5" />,
       onSelect: () => handlers.onMove(file),
     },
-    {
-      label: 'Delete',
-      icon: <Trash2 className="size-3.5" />,
-      danger: true,
-      shortcut: '⌫',
-      dividerBefore: true,
-      onSelect: () => handlers.onDelete(file),
-    },
+    ...(file.archived && handlers.onRestore
+      ? [
+          {
+            label: 'Restore',
+            icon: <RotateCcw className="size-3.5" />,
+            onSelect: () => handlers.onRestore!(file),
+            dividerBefore: true,
+          },
+          {
+            label: 'Delete forever',
+            icon: <Trash2 className="size-3.5" />,
+            danger: true,
+            shortcut: '⌫',
+            onSelect: () => handlers.onDelete(file),
+          },
+        ]
+      : [
+          {
+            label: 'Delete',
+            icon: <Trash2 className="size-3.5" />,
+            danger: true,
+            shortcut: '⌫',
+            dividerBefore: true,
+            onSelect: () => handlers.onDelete(file),
+          },
+        ]),
   ];
 }
 

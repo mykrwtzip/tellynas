@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { jsonError, requireSession, withApiGuard } from '@/lib/api';
+import type { StoredFile } from '@/lib/types';
 import {
   childFolders,
   computeStats,
@@ -7,6 +8,7 @@ import {
   filesInFolder,
   getIndex,
   normalizeFolder,
+  purgeStoredFiles,
 } from '@/lib/store';
 
 export const runtime = 'nodejs';
@@ -21,14 +23,27 @@ export async function GET(request: Request) {
     const folder = normalizeFolder(url.searchParams.get('folder'));
     const query = (url.searchParams.get('q') || '').trim().toLowerCase();
     const wantsAll = url.searchParams.get('all') === '1';
+    const onlyArchived = url.searchParams.get('archived') === '1';
+    const includeArchived = url.searchParams.get('includeArchived') === '1';
     const index = await getIndex();
+
+    // Archived files live in the Archive view; they are hidden from the active
+    // library unless explicitly requested.
+    const matchesArchiveFilter = (file: StoredFile) =>
+      onlyArchived
+        ? file.archived
+        : includeArchived
+          ? true
+          : !file.archived;
 
     // The whole library in one payload: the client filters folders, search and
     // starred views locally so navigation feels instant.
     if (wantsAll) {
       return NextResponse.json({
         folder: '',
-        files: [...index.files].sort((a, b) => b.createdAt - a.createdAt),
+        files: [...index.files]
+          .filter(matchesArchiveFilter)
+          .sort((a, b) => b.createdAt - a.createdAt),
         folders: [...index.folders].sort((a, b) => a.path.localeCompare(b.path)),
         stats: computeStats(index),
       });
@@ -36,6 +51,7 @@ export async function GET(request: Request) {
 
     if (query) {
       const matches = index.files
+        .filter(matchesArchiveFilter)
         .filter(
           (file) =>
             file.name.toLowerCase().includes(query) ||
@@ -57,13 +73,15 @@ export async function GET(request: Request) {
     }
 
     if (folder && !index.folders.some((entry) => entry.path === folder)) {
-      const hasFiles = index.files.some((file) => file.folder.startsWith(folder));
+      const hasFiles = index.files.some(
+        (file) => matchesArchiveFilter(file) && file.folder.startsWith(folder),
+      );
       if (!hasFiles) return jsonError('That folder no longer exists.', 404);
     }
 
     return NextResponse.json({
       folder,
-      files: filesInFolder(index, folder),
+      files: filesInFolder(index, folder).filter(matchesArchiveFilter),
       folders: childFolders(index, folder),
       stats: computeStats(index),
     });
@@ -73,6 +91,8 @@ export async function GET(request: Request) {
 export async function DELETE(request: Request) {
   const unauthorized = await requireSession();
   if (unauthorized) return unauthorized;
+
+  const url = new URL(request.url);
 
   return withApiGuard(async () => {
     let body: { ids?: unknown };
@@ -89,7 +109,14 @@ export async function DELETE(request: Request) {
       return jsonError('Select at least one file to delete.', 400);
     }
 
-    const deletedCount = await deleteStoredFiles(ids);
-    return NextResponse.json({ success: true, deletedCount });
+    const purge = url.searchParams.get('purge') === '1';
+    const count = purge
+      ? await purgeStoredFiles(ids)
+      : await deleteStoredFiles(ids);
+    return NextResponse.json({
+      success: true,
+      deletedCount: count,
+      ...(purge ? { purged: true } : { archived: true }),
+    });
   });
 }

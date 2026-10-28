@@ -40,6 +40,7 @@ type Props = {
   folders: FolderNode[];
   stats: StorageStats;
   starredCount: number;
+  archivedCount: number;
   demo: boolean;
   username: string | null;
   onNavigateView: (view: LibraryView) => void;
@@ -52,10 +53,15 @@ type Props = {
   onCloseMobile?: () => void;
 };
 
-const WORKSPACE_VIEWS: Array<{ id: 'all' | 'recent' | 'starred'; label: string; icon: typeof Files }> = [
+const WORKSPACE_VIEWS: Array<{
+  id: 'all' | 'recent' | 'starred' | 'archive';
+  label: string;
+  icon: typeof Files;
+}> = [
   { id: 'all', label: 'All files', icon: Files },
   { id: 'recent', label: 'Recent', icon: Clock3 },
   { id: 'starred', label: 'Starred', icon: Star },
+  { id: 'archive', label: 'Archive', icon: Archive },
 ];
 
 const CATEGORY_VIEWS: Array<{ id: MediaCategory; label: string; icon: typeof Files; dot: string }> = [
@@ -74,6 +80,7 @@ export function Sidebar({
   folders,
   stats,
   starredCount,
+  archivedCount,
   demo,
   username,
   onNavigateView,
@@ -300,6 +307,11 @@ export function Sidebar({
                   {entry.id === 'starred' && starredCount > 0 && (
                     <span className="font-mono text-[11px] text-muted tabular-nums">
                       {starredCount}
+                    </span>
+                  )}
+                  {entry.id === 'archive' && archivedCount > 0 && (
+                    <span className="font-mono text-[11px] text-muted tabular-nums">
+                      {archivedCount}
                     </span>
                   )}
                 </button>

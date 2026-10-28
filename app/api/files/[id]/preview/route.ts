@@ -1,6 +1,7 @@
 import { jsonError, requireSession, withApiGuard } from '@/lib/api';
 import { getDriver } from '@/lib/driver';
 import { getStoredFile } from '@/lib/store';
+import type { StoredChunk } from '@/lib/types';
 import { createStoredFileStream, parseRangeHeader } from '@/lib/stream';
 
 export const runtime = 'nodejs';
@@ -35,7 +36,8 @@ export async function GET(request: Request, context: RouteContext) {
     }
 
     const driver = getDriver();
-    const fetchChunk = (fileId: string) => driver.getChunkStream(fileId);
+    const fetchChunk = (chunk: StoredChunk) =>
+      driver.getChunkStream(chunk.fileId, chunk.botIndex);
     const baseHeaders: Record<string, string> = {
       'Content-Type': TEXT_KINDS.test(file.mime)
         ? `${file.mime.split(';')[0]}; charset=utf-8`

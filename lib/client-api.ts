@@ -21,6 +21,7 @@ export type SessionInfo = {
     telegramConfigured: boolean;
     missingEnv: string[];
     chunkSize: number;
+    botCount: number;
     usingDefaultPassword: boolean;
     defaultUsername: string;
   };
@@ -121,20 +122,43 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  patchFile: (id: string, changes: { name?: string; folder?: string; starred?: boolean }) =>
+  patchFile: (id: string, changes: { name?: string; folder?: string; starred?: boolean; archived?: boolean }) =>
     request<{ success: boolean; file: StoredFile }>(`/api/files/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(changes),
     }),
 
-  deleteFile: (id: string) =>
-    request<{ success: boolean }>(`/api/files/${id}`, { method: 'DELETE' }),
+  deleteFile: (id: string, { purge = false } = {}) =>
+    request<{ success: boolean; archived?: boolean; purged?: boolean }>(
+      `/api/files/${id}${purge ? '?purge=1' : ''}`,
+      { method: 'DELETE' },
+    ),
 
-  deleteFiles: (ids: string[]) =>
-    request<{ success: boolean; deletedCount: number }>('/api/files', {
-      method: 'DELETE',
-      body: JSON.stringify({ ids }),
-    }),
+  deleteFiles: (ids: string[], { purge = false } = {}) =>
+    request<{ success: boolean; deletedCount: number; archived?: boolean; purged?: boolean }>(
+      `/api/files?purge=${purge}`,
+      { method: 'DELETE', body: JSON.stringify({ ids }) },
+    ),
+
+  listArchived: () => request<ListResponse>('/api/files?archived=1'),
+
+  createShare: (id: string, body?: { expiresAt?: number }) =>
+    request<{ success: boolean; token: string; url: string }>(
+      `/api/files/${id}/share`,
+      { method: 'POST', body: JSON.stringify(body ?? {}) },
+    ),
+
+  shares: () =>
+    request<{
+      share: { token: string; createdAt: number; expiresAt?: number };
+      file: { id: string; name: string; size: number; mime: string };
+      downloadUrl: string;
+    }[]>('/api/shares'),
+
+  revokeShare: (token: string) =>
+    request<{ success: boolean }>(`/api/share/${token}`, { method: 'DELETE' }),
+
+  shareUrl: (token: string) => `/api/share/${token}/download`,
 
   downloadUrl: (id: string) => `/api/files/${id}/download`,
   previewUrl: (id: string) => `/api/files/${id}/preview`,

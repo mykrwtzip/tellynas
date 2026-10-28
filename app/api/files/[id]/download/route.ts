@@ -22,8 +22,8 @@ export async function GET(_request: Request, context: RouteContext) {
     if (!file) return jsonError('File not found.', 404);
 
     const driver = getDriver();
-    const stream = createStoredFileStream(file.chunks, (fileId) =>
-      driver.getChunkStream(fileId),
+    const stream = createStoredFileStream(file.chunks, (chunk) =>
+      driver.getChunkStream(chunk.fileId, chunk.botIndex),
     );
 
     return new Response(stream, {

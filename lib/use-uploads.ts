@@ -30,22 +30,35 @@ type Options = {
   chunkSize: number;
   onUploaded: (file: StoredFile) => void;
   onError: (message: string) => void;
+  /** How many files upload at the same time. */
+  maxConcurrent?: number;
+  /** How many slices of one file upload in parallel. */
+  chunkConcurrency?: number;
 };
 
-const MAX_CONCURRENT = 3;
-const CHUNK_CONCURRENCY = 3;
+const DEFAULT_MAX_CONCURRENT = 6;
+const DEFAULT_CHUNK_CONCURRENCY = 8;
 const MAX_RETRIES = 2;
 
 let itemCounter = 0;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function useUploadQueue({ chunkSize, onUploaded, onError }: Options) {
+export function useUploadQueue({
+  chunkSize,
+  onUploaded,
+  onError,
+  maxConcurrent,
+  chunkConcurrency,
+}: Options) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const internal = useRef<InternalItem[]>([]);
   const active = useRef(new Set<string>());
   const controllers = useRef(new Map<string, AbortController>());
   const syncScheduled = useRef(false);
+
+  const maxFilesConcurrent = Math.max(1, maxConcurrent ?? DEFAULT_MAX_CONCURRENT);
+  const maxChunkConcurrent = Math.max(1, chunkConcurrency ?? DEFAULT_CHUNK_CONCURRENCY);
 
   const callbacks = useRef({ onUploaded, onError });
   useEffect(() => {
@@ -183,7 +196,7 @@ export function useUploadQueue({ chunkSize, onUploaded, onError }: Options) {
 
           await Promise.all(
             Array.from(
-              { length: Math.min(CHUNK_CONCURRENCY, totalChunks) },
+              { length: Math.min(maxChunkConcurrent, totalChunks) },
               () => uploadWorker(),
             ),
           );
@@ -230,7 +243,7 @@ export function useUploadQueue({ chunkSize, onUploaded, onError }: Options) {
   );
 
   const pump = useCallback(() => {
-    while (active.current.size < MAX_CONCURRENT) {
+    while (active.current.size < maxFilesConcurrent) {
       const next = internal.current.find((item) => item.status === 'queued');
       if (!next) return;
       active.current.add(next.id);

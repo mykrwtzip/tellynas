@@ -1,6 +1,6 @@
 import type { StoredChunk } from './types';
 
-type ChunkFetcher = (fileId: string) => Promise<{ stream: ReadableStream<Uint8Array> }>;
+type ChunkFetcher = (chunk: StoredChunk) => Promise<{ stream: ReadableStream<Uint8Array> }>;
 
 type SliceEntry = {
   chunk: StoredChunk;
@@ -31,14 +31,14 @@ async function* iterateRange(
 
   // Prefetch the next chunk stream while streaming the current one so multi-part
   // downloads and media playback transition seamlessly without dead-air pauses.
-  let nextPromise: ReturnType<ChunkFetcher> | null = fetchChunk(needed[0].chunk.fileId);
+  let nextPromise: ReturnType<ChunkFetcher> | null = fetchChunk(needed[0].chunk);
 
   try {
     for (let idx = 0; idx < needed.length; idx += 1) {
       const current = needed[idx];
-      const currentFetch = nextPromise ?? fetchChunk(current.chunk.fileId);
+      const currentFetch = nextPromise ?? fetchChunk(current.chunk);
       nextPromise =
-        idx + 1 < needed.length ? fetchChunk(needed[idx + 1].chunk.fileId) : null;
+        idx + 1 < needed.length ? fetchChunk(needed[idx + 1].chunk) : null;
       // Prevent unhandled rejection if current stream cancels before nextPromise is awaited.
       nextPromise?.catch(() => undefined);
 

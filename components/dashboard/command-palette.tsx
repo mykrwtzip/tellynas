@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  Archive,
   Clock3,
   CornerDownLeft,
   FileImage,
@@ -165,6 +166,13 @@ export function CommandPalette({
         label: 'Go to Recent uploads',
         icon: <Clock3 className="size-4 text-muted" />,
         onSelect: () => onNavigateView('recent'),
+      },
+      {
+        id: 'nav-archive',
+        section: 'Views',
+        label: 'Go to Archive',
+        icon: <Archive className="size-4 text-muted" />,
+        onSelect: () => onNavigateView('archive'),
       },
       {
         id: 'nav-images',
