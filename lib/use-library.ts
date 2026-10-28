@@ -32,6 +32,9 @@ const initialState: LibraryState = {
   lastSyncedAt: null,
 };
 
+const STORAGE_SNAPSHOT_KEY = 'tellynas:snapshot:v1';
+const STORAGE_SNAPSHOT_TTL = 1000 * 60 * 60 * 24; // 24h stale cache for instant paint
+
 function ensureAncestors(folders: FolderEntry[], folderPath: string): FolderEntry[] {
   if (!folderPath) return folders;
   const existing = new Set(folders.map((entry) => entry.path));
@@ -49,11 +52,43 @@ function ensureAncestors(folders: FolderEntry[], folderPath: string): FolderEntr
   return additions.length > 0 ? [...folders, ...additions] : folders;
 }
 
+function tryLoadCachedSnapshot(): LibraryState | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { files: StoredFile[]; folders: FolderEntry[]; ts: number };
+    if (!parsed?.files || !Array.isArray(parsed.files) || Date.now() - parsed.ts > STORAGE_SNAPSHOT_TTL) return null;
+    return {
+      files: parsed.files,
+      folders: parsed.folders ?? [],
+      loading: false,
+      refreshing: true, // will revalidate in background
+      error: null,
+      lastSyncedAt: parsed.ts,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistSnapshot(files: StoredFile[], folders: FolderEntry[]) {
+  try {
+    // Keep snapshot small: strip heavy chunks? keep them – needed for preview metadata.
+    // Cap at 2000 files to avoid localStorage quota (5MB).
+    const cappedFiles = files.length > 2000 ? files.slice(0, 2000) : files;
+    localStorage.setItem(STORAGE_SNAPSHOT_KEY, JSON.stringify({ files: cappedFiles, folders, ts: Date.now() }));
+  } catch {
+    /* quota exceeded – ignore */
+  }
+}
+
 export function useLibrary() {
   const [state, setState] = useState<LibraryState>(initialState);
   const stateRef = useRef<LibraryState>(initialState);
   const mounted = useRef(true);
   const inFlight = useRef<Promise<void> | null>(null);
+  const retryTimer = useRef<number | null>(null);
+  const retryCount = useRef(0);
 
   useEffect(() => {
     stateRef.current = state;
@@ -61,12 +96,18 @@ export function useLibrary() {
 
   useEffect(() => {
     mounted.current = true;
+    // Attempt to hydrate from local cache for instant paint (fix “don't fetched library” perception)
+    const cached = tryLoadCachedSnapshot();
+    if (cached && cached.files.length > 0) {
+      setState(cached);
+    }
     return () => {
       mounted.current = false;
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
     };
   }, []);
 
-  const load = useCallback(async (silent: boolean) => {
+  const load = useCallback(async (silent: boolean, attempt = 0) => {
     if (inFlight.current) {
       await inFlight.current;
       if (!mounted.current) return;
@@ -83,21 +124,40 @@ export function useLibrary() {
       try {
         const data = await api.listAll();
         if (!mounted.current) return;
+        retryCount.current = 0;
+        const nextFolders = data.folders.map((folder) => ({
+          path: folder.path,
+          createdAt: folder.createdAt,
+        }));
         setState({
           files: data.files,
-          folders: data.folders.map((folder) => ({
-            path: folder.path,
-            createdAt: folder.createdAt,
-          })),
+          folders: nextFolders,
           loading: false,
           refreshing: false,
           error: null,
           lastSyncedAt: Date.now(),
         });
+        persistSnapshot(data.files, nextFolders);
       } catch (error) {
         if (!mounted.current) return;
         const message =
           error instanceof ApiError ? error.message : 'Could not load your library.';
+
+        // Auto-retry with backoff on transient failures (502/504/0) – fixes Telegram hiccups that looked like “bots offline”.
+        const isTransient = error instanceof ApiError && (error.status === 0 || error.status >= 500 || error.status === 429);
+        if (isTransient && attempt < 3) {
+          const backoff = 800 * Math.pow(2, attempt);
+          retryTimer.current = window.setTimeout(() => {
+            void load(true, attempt + 1);
+          }, backoff) as unknown as number;
+          setState((current) => ({
+            ...current,
+            refreshing: true,
+            error: `Syncing… retry ${attempt + 1}/3`,
+          }));
+          return;
+        }
+
         setState((current) => ({
           ...current,
           loading: false,
@@ -115,6 +175,34 @@ export function useLibrary() {
 
   useEffect(() => {
     void load(false);
+  }, [load]);
+
+  // Revalidate on window focus / visibility – cross-device uploads appear within seconds without manual refresh
+  useEffect(() => {
+    const onFocus = () => {
+      if (!stateRef.current.loading && stateRef.current.lastSyncedAt && Date.now() - stateRef.current.lastSyncedAt > 15_000) {
+        void load(true);
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') onFocus();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [load]);
+
+  // Periodic background sync (every 45s) while tab is visible – keeps second device's uploads fresh
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && !stateRef.current.refreshing) {
+        void load(true);
+      }
+    }, 45_000);
+    return () => window.clearInterval(id);
   }, [load]);
 
   const refresh = useCallback(() => load(true), [load]);
@@ -141,12 +229,15 @@ export function useLibrary() {
       const files = exists
         ? current.files.map((entry) => (entry.id === file.id ? file : entry))
         : [file, ...current.files];
-      return {
+      const next = {
         ...current,
         files,
         folders: ensureAncestors(current.folders, file.folder),
         lastSyncedAt: Date.now(),
       };
+      // Persist eagerly so reload still shows the file even before next server revalidation
+      persistSnapshot(next.files, next.folders);
+      return next;
     });
   }, []);
 

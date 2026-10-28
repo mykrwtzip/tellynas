@@ -28,7 +28,14 @@ export async function withApiGuard<T>(
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Unexpected server error.';
-    console.error('[tellynas] API error:', error);
-    return jsonError(message, 500);
+    // Preserve TelegramError status codes for actionable UI messages
+    const status =
+      error instanceof Error && 'status' in error && typeof (error as { status?: unknown }).status === 'number'
+        ? ((error as { status: number }).status as number)
+        : 500;
+    // 4xx errors are user-actionable (bad config), don't log as error
+    if (status >= 500) console.error('[tellynas] API error:', error);
+    else console.warn('[tellynas] API warn:', message);
+    return jsonError(message, status >= 400 && status < 600 ? status : 500);
   }
 }

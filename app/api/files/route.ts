@@ -25,7 +25,18 @@ export async function GET(request: Request) {
     const wantsAll = url.searchParams.get('all') === '1';
     const onlyArchived = url.searchParams.get('archived') === '1';
     const includeArchived = url.searchParams.get('includeArchived') === '1';
+
+    // Support conditional GET via ETag derived from directory updatedAt – saves bandwidth on poll.
+    const ifNoneMatch = request.headers.get('if-none-match');
+
     const index = await getIndex();
+
+    // Derive ETag from the freshest timestamps to enable 304 handling without extra Telegram calls.
+    const etagBase = `${index.files.length}:${index.folders.length}:${Math.max(0, ...index.files.map((f) => f.updatedAt), ...index.folders.map((f) => f.createdAt), 0)}`;
+    const etag = `"${Buffer.from(etagBase).toString('base64url')}"`;
+    if (ifNoneMatch === etag) {
+      return new Response(null, { status: 304, headers: { ETag: etag, 'Cache-Control': 'private, no-cache' } });
+    }
 
     // Archived files live in the Archive view; they are hidden from the active
     // library unless explicitly requested.
@@ -36,17 +47,22 @@ export async function GET(request: Request) {
           ? true
           : !file.archived;
 
+    const commonHeaders = { ETag: etag, 'Cache-Control': 'private, no-cache' as const };
+
     // The whole library in one payload: the client filters folders, search and
     // starred views locally so navigation feels instant.
     if (wantsAll) {
-      return NextResponse.json({
-        folder: '',
-        files: [...index.files]
-          .filter(matchesArchiveFilter)
-          .sort((a, b) => b.createdAt - a.createdAt),
-        folders: [...index.folders].sort((a, b) => a.path.localeCompare(b.path)),
-        stats: computeStats(index),
-      });
+      return NextResponse.json(
+        {
+          folder: '',
+          files: [...index.files]
+            .filter(matchesArchiveFilter)
+            .sort((a, b) => b.createdAt - a.createdAt),
+          folders: [...index.folders].sort((a, b) => a.path.localeCompare(b.path)),
+          stats: computeStats(index),
+        },
+        { headers: commonHeaders },
+      );
     }
 
     if (query) {
@@ -60,16 +76,19 @@ export async function GET(request: Request) {
         .sort((a, b) => b.updatedAt - a.updatedAt);
 
       if (!folder && matches.length === 0) {
-        return NextResponse.json({ folder, files: [], folders: [], stats: computeStats(index) });
+        return NextResponse.json({ folder, files: [], folders: [], stats: computeStats(index) }, { headers: commonHeaders });
       }
 
-      return NextResponse.json({
-        folder,
-        files: matches,
-        folders: [],
-        stats: computeStats(index),
-        searching: true,
-      });
+      return NextResponse.json(
+        {
+          folder,
+          files: matches,
+          folders: [],
+          stats: computeStats(index),
+          searching: true,
+        },
+        { headers: commonHeaders },
+      );
     }
 
     if (folder && !index.folders.some((entry) => entry.path === folder)) {
@@ -79,12 +98,15 @@ export async function GET(request: Request) {
       if (!hasFiles) return jsonError('That folder no longer exists.', 404);
     }
 
-    return NextResponse.json({
-      folder,
-      files: filesInFolder(index, folder).filter(matchesArchiveFilter),
-      folders: childFolders(index, folder),
-      stats: computeStats(index),
-    });
+    return NextResponse.json(
+      {
+        folder,
+        files: filesInFolder(index, folder).filter(matchesArchiveFilter),
+        folders: childFolders(index, folder),
+        stats: computeStats(index),
+      },
+      { headers: commonHeaders },
+    );
   });
 }
 

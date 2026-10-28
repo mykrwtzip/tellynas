@@ -159,7 +159,7 @@ export function serializeFileSidecar(file: StoredFile): {
       captionMeta,
       `tellynas:file:v1 ${file.id} ${file.name}`,
     ),
-    content: JSON.stringify(record, null, 2),
+    content: JSON.stringify(record),
   };
 }
 
@@ -181,7 +181,7 @@ export function serializeFolderSidecar(folder: StoredFolder): {
       { v: 1, kind: 'folder', path: folder.path, createdAt: folder.createdAt },
       `tellynas:folder:v1 ${folder.path}`,
     ),
-    content: JSON.stringify(record, null, 2),
+    content: JSON.stringify(record),
   };
 }
 
