@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.cjs"
   },
   "dependencies": {
     "archiver": "^7.0.1",
@@ -25,6 +26,7 @@
     "@types/node": "22.10.2",
     "@types/react": "19.1.0",
     "@types/react-dom": "19.1.0",
+    "react-test-renderer": "^19.1.0",
     "tailwindcss": "4.3.3",
     "typescript": "5.7.2"
   }

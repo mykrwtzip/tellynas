@@ -30,7 +30,7 @@ export async function GET(request: Request, context: RouteContext) {
         status: 304,
         headers: {
           ETag: etag,
-          'Cache-Control': 'private, no-store',
+          'Cache-Control': 'private, max-age=300',
         },
       });
     }
@@ -45,7 +45,7 @@ export async function GET(request: Request, context: RouteContext) {
       'Content-Disposition': 'inline',
       'Content-Security-Policy': "sandbox; default-src 'none'",
       'X-Content-Type-Options': 'nosniff',
-      'Cache-Control': 'private, no-store',
+      'Cache-Control': 'private, max-age=300',
       ETag: etag,
       'Accept-Ranges': 'bytes',
     };

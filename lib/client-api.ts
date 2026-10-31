@@ -46,16 +46,13 @@ export type SystemInfo = {
   usingDefaultPassword: boolean;
 };
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+async function request<T>(url: string, init?: RequestInit, timeoutMs = 30_000): Promise<T> {
   let response: Response;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
-  // Merge external signal if provided
-  const signal = init?.signal ?? controller.signal;
-  // If caller passed a signal, wire abort forwarding
-  if (init?.signal) {
-    controller.signal.addEventListener('abort', () => controller.abort());
-  }
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const abort = () => controller.abort();
+  if (init?.signal?.aborted) abort();
+  else init?.signal?.addEventListener('abort', abort, { once: true });
   try {
     response = await fetch(url, {
       ...init,
@@ -71,11 +68,13 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     });
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
-      throw new ApiError('Request timed out. The server may be busy — retrying.', 504);
+      if (init?.signal?.aborted) throw new ApiError('Upload cancelled.', 0);
+      throw new ApiError('Request timed out. Please retry.', 504);
     }
     throw new ApiError('Cannot reach the server. Check your connection.', 0);
   } finally {
     clearTimeout(timeout);
+    init?.signal?.removeEventListener('abort', abort);
   }
 
   if (response.status === 204) return undefined as T;
@@ -125,16 +124,18 @@ export const api = {
   listAll: () => request<ListResponse>('/api/files?all=1'),
 
   finalize: (payload: {
+    id: string;
     name: string;
     mime: string;
     size: number;
     folder: string;
-    chunks: Array<{ index: number; messageId: number; fileId: string; size: number }>;
-  }) =>
+    chunks: Array<{ index: number; messageId: number; fileId: string; size: number; botIndex?: number }>;
+  }, signal?: AbortSignal) =>
     request<{ success: boolean; file: StoredFile }>('/api/files/finalize', {
       method: 'POST',
       body: JSON.stringify(payload),
-    }),
+      signal,
+    }, 240_000),
 
   patchFile: (id: string, changes: { name?: string; folder?: string; starred?: boolean; archived?: boolean }) =>
     request<{ success: boolean; file: StoredFile }>(`/api/files/${id}`, {
@@ -219,6 +220,10 @@ export function uploadChunk(
     xhr.open('POST', '/api/files/upload');
     xhr.responseType = 'text';
     xhr.withCredentials = true;
+    xhr.timeout = 240_000;
+    const abort = () => xhr.abort();
+    const cleanup = () => options.signal?.removeEventListener('abort', abort);
+    xhr.onloadend = cleanup;
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) options.onProgress?.(event.loaded, event.total);
@@ -244,8 +249,10 @@ export function uploadChunk(
 
     xhr.onerror = () => reject(new ApiError('Network error while uploading.', 0));
     xhr.onabort = () => reject(new ApiError('Upload cancelled.', 0));
+    xhr.ontimeout = () => reject(new ApiError('Upload timed out. Please retry.', 504));
 
-    options.signal?.addEventListener('abort', () => xhr.abort(), { once: true });
+    if (options.signal?.aborted) { reject(new ApiError('Upload cancelled.', 0)); return; }
+    options.signal?.addEventListener('abort', abort, { once: true });
     xhr.send(form);
   });
 }
