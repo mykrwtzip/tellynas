@@ -744,6 +744,7 @@ async function commitCreatedFile(
 }
 
 export async function createStoredFile(input: {
+  id?: string;
   name: string;
   mime: string;
   size: number;
@@ -751,7 +752,7 @@ export async function createStoredFile(input: {
   chunks: StoredChunk[];
 }): Promise<StoredFile> {
   const driver = getDriver();
-  const id = randomUUID();
+  const id = input.id ?? randomUUID();
   const folder = normalizeFolder(input.folder);
   const desiredName = sanitizeName(input.name);
   const mime = String(input.mime || 'application/octet-stream').slice(0, 200);
@@ -784,6 +785,12 @@ export async function createStoredFile(input: {
       sidecarPromise,
     ]);
 
+    const existing = scanned.index.files.find((file) => file.id === id);
+    if (existing) {
+      // This upload may have completed after the browser timed out.
+      await driver.deleteMessages([preUploadedSidecar.messageId]);
+      return existing;
+    }
     return commitCreatedFile(driver, scanned, {
       id,
       desiredName,

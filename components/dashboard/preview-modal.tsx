@@ -51,6 +51,7 @@ export function PreviewModal({
   const [loadingText, setLoadingText] = useState(false);
   const [copied, setCopied] = useState(false);
   const [zoomed, setZoomed] = useState(false);
+  const [loadedImage, setLoadedImage] = useState<string | null>(null);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
 
   const kind = file ? kindFromName(file.name, file.mime) : 'other';
@@ -107,7 +108,7 @@ export function PreviewModal({
 
   if (!file) return null;
 
-  const url = api.previewUrl(file.id);
+  const url = `${api.previewUrl(file.id)}?v=${file.updatedAt}`;
 
   const copyContent = async () => {
     if (!text) return;
@@ -230,18 +231,28 @@ export function PreviewModal({
         )}
 
         {kind === 'image' && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={url}
-            alt={file.name}
-            onClick={() => setZoomed((v) => !v)}
-            className={cn(
-              'rounded-lg shadow-2xl transition-all',
-              zoomed
-                ? 'max-h-none max-w-none cursor-zoom-out'
-                : 'max-h-full max-w-full cursor-zoom-in object-contain',
+          <div className="relative flex max-h-full max-w-full items-center justify-center">
+            {loadedImage !== url && (
+              // Show the cached gallery thumbnail while the full image loads.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={`/api/files/${file.id}/thumbnail?v=${file.updatedAt}`} alt="" aria-hidden="true" className="max-h-full max-w-full rounded-lg object-contain" />
             )}
-          />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              key={url}
+              src={url}
+              alt={file.name}
+              onLoad={() => setLoadedImage(url)}
+              onClick={() => setZoomed((v) => !v)}
+              className={cn(
+                'rounded-lg shadow-2xl transition-all',
+                loadedImage !== url && 'absolute opacity-0',
+                zoomed
+                  ? 'max-h-none max-w-none cursor-zoom-out'
+                  : 'max-h-full max-w-full cursor-zoom-in object-contain',
+              )}
+            />
+          </div>
         )}
 
         {kind === 'video' && (

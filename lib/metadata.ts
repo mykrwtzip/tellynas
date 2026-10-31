@@ -123,6 +123,7 @@ export function toEmbeddedFileMeta(file: StoredFile): EmbeddedFileMeta {
       messageId: chunk.messageId,
       fileId: chunk.fileId,
       size: chunk.size,
+      botIndex: chunk.botIndex,
     })),
   };
 }
@@ -221,7 +222,7 @@ export function parseDirectoryCaption(caption: string | null | undefined): Stora
 function normalizeChunks(raw: unknown): StoredChunk[] {
   if (!Array.isArray(raw)) return [];
   return raw
-    .map((entry) => {
+    .map((entry): StoredChunk | null => {
       if (!entry || typeof entry !== 'object') return null;
       const candidate = entry as Partial<StoredChunk>;
       if (!candidate.fileId || typeof candidate.fileId !== 'string') return null;
@@ -230,6 +231,7 @@ function normalizeChunks(raw: unknown): StoredChunk[] {
         messageId: Number(candidate.messageId ?? 0),
         fileId: candidate.fileId,
         size: Math.max(0, Number(candidate.size ?? 0)),
+        botIndex: Number.isSafeInteger(candidate.botIndex) && (candidate.botIndex ?? -1) >= 0 ? candidate.botIndex : undefined,
       } satisfies StoredChunk;
     })
     .filter((entry): entry is StoredChunk => entry !== null)

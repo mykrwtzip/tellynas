@@ -27,7 +27,7 @@ export type UploadItem = {
 type InternalItem = UploadItem & {
   file: File;
   /** Chunk indexes that have already been stored (for resumable retries). */
-  uploadedChunks: Set<number>;
+  uploadedChunks: Map<number, StoredChunk>;
 };
 
 type Options = {
@@ -47,7 +47,16 @@ const DEFAULT_CHUNK_CONCURRENCY = 8;
 const GLOBAL_CHUNK_CAP = 12; // max concurrent chunk XHRs across all files
 const MAX_RETRIES = 3;
 
-let itemCounter = 0;
+// randomUUID is restricted to secure contexts; getRandomValues also works on
+// self-hosted HTTP installations and still produces cryptographically random IDs.
+function uploadId() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -67,17 +76,19 @@ class Semaphore {
         this.waiters = this.waiters.filter((w) => w !== waiter);
         reject(new ApiError('Upload cancelled.', 0));
       };
-      const waiter = () => resolve();
+      const waiter = () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
       this.waiters.push(waiter);
       signal?.addEventListener('abort', onAbort, { once: true });
     });
-    this.count += 1;
     return () => this.release();
   }
   private release() {
-    this.count = Math.max(0, this.count - 1);
     const next = this.waiters.shift();
-    if (next) next();
+    if (next) next(); // Transfer the slot directly to the waiter.
+    else this.count -= 1;
   }
 }
 
@@ -108,7 +119,7 @@ export function useUploadQueue({
     const flush = () => {
       syncScheduled.current = false;
       setItems(
-        internal.current.map(({ file: _file, ...rest }) => ({ ...rest })),
+        internal.current.map(({ file: _file, uploadedChunks: _chunks, ...rest }) => ({ ...rest })),
       );
     };
     if (immediate) {
@@ -128,7 +139,6 @@ export function useUploadQueue({
       controllers.current.set(item.id, controller);
 
       const totalChunks = Math.max(1, Math.ceil(item.size / chunkBytes) || 1);
-      const chunks: StoredChunk[] = [];
       const loadedPerChunk = new Array<number>(totalChunks).fill(0);
 
       item.status = 'uploading';
@@ -143,144 +153,83 @@ export function useUploadQueue({
         sync();
       };
 
-      const doUploadChunk = async (index: number, attempt = 0): Promise<StoredChunk> => {
-        const release = await globalChunkSemaphore.acquire(controller.signal);
-        try {
-          const start = index * chunkBytes;
-          const end = Math.min(start + chunkBytes, item.size);
-          const blob = item.file.slice(start, end);
-
-          const form = new FormData();
-          form.append('chunk', blob, item.name);
-          form.append('name', item.name);
-          form.append('folder', item.folder);
-          form.append('index', String(index));
-          form.append('total', String(totalChunks));
-
-          const result = await uploadChunk(form, {
-            signal: controller.signal,
-            onProgress: (loaded) => {
-              loadedPerChunk[index] = Math.min(blob.size, loaded);
-              updateProgress();
-            },
-          });
-          loadedPerChunk[index] = blob.size;
-          item.uploadedChunks.add(index);
-          updateProgress();
-          return result.chunk;
-        } catch (error) {
-          if (controller.signal.aborted) throw error;
-          // Transient: retry with backoff
-          if (attempt < MAX_RETRIES) {
-            await sleep(500 * (attempt + 1));
-            return doUploadChunk(index, attempt + 1);
+      const doUploadChunk = async (index: number): Promise<StoredChunk> => {
+        for (let attempt = 0; ; attempt += 1) {
+          const release = await globalChunkSemaphore.acquire(controller.signal);
+          try {
+            const start = index * chunkBytes;
+            const blob = item.file.slice(start, Math.min(start + chunkBytes, item.size));
+            const form = new FormData();
+            form.append('chunk', blob, item.name);
+            form.append('name', item.name);
+            form.append('folder', item.folder);
+            form.append('index', String(index));
+            form.append('total', String(totalChunks));
+            const result = await uploadChunk(form, {
+              signal: controller.signal,
+              onProgress: (loaded) => {
+                loadedPerChunk[index] = Math.min(blob.size, loaded);
+                updateProgress();
+              },
+            });
+            if (!result.chunk || result.chunk.index !== index) throw new ApiError('Invalid chunk response.', 502);
+            loadedPerChunk[index] = blob.size;
+            item.uploadedChunks.set(index, result.chunk);
+            updateProgress();
+            return result.chunk;
+          } catch (error) {
+            loadedPerChunk[index] = 0;
+            updateProgress();
+            if (controller.signal.aborted || attempt >= MAX_RETRIES ||
+                (error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429)) throw error;
+          } finally {
+            release();
           }
-          throw error;
-        } finally {
-          release();
-          // ensure progress not stuck
-          if (!item.uploadedChunks.has(index)) loadedPerChunk[index] = 0;
+          await sleep(500 * (attempt + 1));
         }
       };
 
       try {
-        // Fast single-request path when the file fits in one slice.
-        if (totalChunks === 1) {
-          const form = new FormData();
-          form.append('chunk', item.file, item.name);
-          form.append('name', item.name);
-          form.append('folder', item.folder);
-          form.append('mime', item.mime || 'application/octet-stream');
-          form.append('size', String(item.size));
-          form.append('index', '0');
-          form.append('total', '1');
-          form.append('finalize', '1');
-
-          // Acquire global slot even for single chunk
-          const release = await globalChunkSemaphore.acquire(controller.signal);
-          let singleResult: Awaited<ReturnType<typeof uploadChunk>> | null = null;
-          try {
-            let attempt = 0;
-            while (true) {
-              try {
-                singleResult = await uploadChunk(form, {
-                  signal: controller.signal,
-                  onProgress: (loaded) => {
-                    loadedPerChunk[0] = Math.min(item.size, loaded);
-                    updateProgress();
-                  },
-                });
-                break;
-              } catch (error) {
-                if (controller.signal.aborted) throw error;
-                attempt += 1;
-                if (attempt > MAX_RETRIES) throw error;
-                await sleep(500 * attempt);
-              }
-            }
-          } finally {
-            release();
-          }
-
-          if (singleResult?.file) {
-            item.status = 'done';
-            item.progress = 100;
-            item.uploadedBytes = item.size;
-            sync(true);
-            callbacks.current.onUploaded(singleResult.file);
-            return;
-          }
-          if (singleResult?.chunk) {
-            chunks.push(singleResult.chunk);
-            loadedPerChunk[0] = item.size;
-            item.uploadedChunks.add(0);
-          }
-        } else {
-          // Parallel slice upload with global throttling.
-          // Resumable: skip chunks already stored.
-          const pendingIndexes = Array.from({ length: totalChunks }, (_, i) => i).filter(
-            (i) => !item.uploadedChunks.has(i),
-          );
-          // Mark resumed chunks as done for progress
-          for (const idx of Array.from(item.uploadedChunks)) {
-            loadedPerChunk[idx] = Math.min(item.size - idx * chunkBytes, chunkBytes);
-          }
-          updateProgress();
-
-          const workers = Math.min(maxChunkConcurrent, pendingIndexes.length);
-          let cursor = 0;
-          const worker = async () => {
-            while (cursor < pendingIndexes.length) {
-              const cur = cursor++;
-              const index = pendingIndexes[cur];
-              const chunk = await doUploadChunk(index);
-              chunks.push(chunk);
-            }
-          };
-          await Promise.all(Array.from({ length: workers }, () => worker()));
-          chunks.sort((a, b) => a.index - b.index);
-
-          // If we resumed, collect already-uploaded ones? In this path we only collected pending.
-          // But chunks from previous attempt are not lost because we retried whole item; item.uploadedChunks already tracks them,
-          // but we need to keep their chunk objects. For simplicity, if we had to resume inside this single run, the above
-          // handles it. Cross-run resume is handled by not clearing chunks on retry.
+        const pendingIndexes = Array.from({ length: totalChunks }, (_, i) => i).filter(
+          (i) => !item.uploadedChunks.has(i),
+        );
+        for (const idx of item.uploadedChunks.keys()) {
+          loadedPerChunk[idx] = Math.min(item.size - idx * chunkBytes, chunkBytes);
         }
+        updateProgress();
+
+        let cursor = 0;
+        let stopped = false;
+        const worker = async () => {
+          while (cursor < pendingIndexes.length && !controller.signal.aborted && !stopped) {
+            try {
+              await doUploadChunk(pendingIndexes[cursor++]);
+            } catch (error) {
+              stopped = true;
+              throw error;
+            }
+          }
+        };
+        // Wait for all workers to settle before allowing a retry, so no old worker
+        // can mutate the item while the next attempt is running.
+        const results = await Promise.allSettled(Array.from({ length: Math.min(maxChunkConcurrent, pendingIndexes.length) }, () => worker()));
+        if (controller.signal.aborted) throw new ApiError('Upload cancelled.', 0);
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+        if (failure) throw failure.reason;
+        const chunks = Array.from(item.uploadedChunks.values()).sort((a, b) => a.index - b.index);
+        if (chunks.length !== totalChunks) throw new ApiError('Some chunks are missing. Please retry.', 0);
 
         item.status = 'finalizing';
         sync(true);
 
         const { file } = await api.finalize({
+          id: item.id,
           name: item.name,
           mime: item.mime || 'application/octet-stream',
           size: item.size,
           folder: item.folder,
-          chunks: chunks.map(({ index, messageId, fileId, size }) => ({
-            index,
-            messageId,
-            fileId,
-            size,
-          })),
-        });
+          chunks,
+        }, controller.signal);
 
         item.status = 'done';
         item.progress = 100;
@@ -307,7 +256,7 @@ export function useUploadQueue({
 
   const pump = useCallback(() => {
     while (active.current.size < maxFilesConcurrent) {
-      const next = internal.current.find((item) => item.status === 'queued');
+      const next = internal.current.find((item) => item.status === 'queued' && !active.current.has(item.id));
       if (!next) return;
       active.current.add(next.id);
       void run(next).finally(() => {
@@ -324,9 +273,8 @@ export function useUploadQueue({
       if (accepted.length === 0) return;
 
       accepted.forEach((file) => {
-        itemCounter += 1;
         internal.current.push({
-          id: `upload-${Date.now().toString(36)}-${itemCounter}`,
+          id: uploadId(),
           name: file.name,
           size: file.size,
           mime: file.type || 'application/octet-stream',
@@ -335,7 +283,7 @@ export function useUploadQueue({
           progress: 0,
           uploadedBytes: 0,
           file,
-          uploadedChunks: new Set<number>(),
+          uploadedChunks: new Map<number, StoredChunk>(),
         });
       });
       sync(true);
@@ -366,8 +314,6 @@ export function useUploadQueue({
       item.status = 'queued';
       item.progress = 0;
       item.uploadedBytes = 0;
-      // keep uploadedChunks for true resume – only clear on explicit user intent? But here we want retry to resume, not restart.
-      // So we keep the set, letting doUploadChunk skip already succeeded indexes.
       item.error = undefined;
       sync(true);
       pump();

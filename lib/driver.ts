@@ -62,25 +62,21 @@ type TelegramChatInfo = {
 const TELEGRAM_TIMEOUT_MS = 15_000;
 const MAX_RETRIES = 2;
 
-async function withTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): Promise<T> {
-  if (signal?.aborted) throw new TelegramError('Request aborted', 499);
-  let timer: NodeJS.Timeout | null = null;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new TelegramError(`Telegram request timed out after ${ms / 1000}s. Check network / try again.`, 504)), ms);
-  });
-  const abortHandler = () => {
-    if (timer) clearTimeout(timer);
-  };
-  signal?.addEventListener('abort', abortHandler, { once: true });
+async function fetchWithTimeout(url: string | URL, init: RequestInit, ms: number): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abort = () => controller.abort();
+  if (init.signal?.aborted) abort();
+  else init.signal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, ms);
   try {
-    const result = await Promise.race([promise, timeout]);
-    if (timer) clearTimeout(timer);
-    signal?.removeEventListener('abort', abortHandler);
-    return result;
-  } catch (e) {
-    if (timer) clearTimeout(timer);
-    signal?.removeEventListener('abort', abortHandler);
-    throw e;
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) throw new TelegramError(`Telegram request timed out after ${ms / 1000}s. Please retry.`, 504);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    init.signal?.removeEventListener('abort', abort);
   }
 }
 
@@ -101,22 +97,22 @@ async function telegramCall<T>(
 
   let response: Response;
   try {
-    const fetchPromise = fetch(url, {
+    response = await fetchWithTimeout(url, {
       method: init?.body ? 'POST' : 'GET',
       body: init?.body,
       cache: 'no-store',
       signal: init?.signal,
-    });
-    response = await withTimeout(fetchPromise, TELEGRAM_TIMEOUT_MS, init?.signal);
+    }, method === 'sendDocument' || method === 'editMessageMedia' ? 90_000 : TELEGRAM_TIMEOUT_MS);
   } catch (error) {
     // Abort should propagate immediately
     if ((error as Error).name === 'AbortError' || (error as TelegramError).status === 499) throw error;
-    if (attempt < MAX_RETRIES) {
+    if (attempt < (method === 'sendDocument' || method === 'editMessageMedia' ? 1 : MAX_RETRIES)) {
       await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
       return telegramCall<T>(token, method, init, attempt + 1);
     }
     throw new TelegramError(
       `Could not reach Telegram: ${(error as Error).message}. Check the server's network access.`,
+      error instanceof TelegramError ? error.status : 502,
     );
   }
 
@@ -135,7 +131,7 @@ async function telegramCall<T>(
     if (payload.error_code === 429) {
       const retryAfter = payload.parameters?.retry_after ?? 1;
       if (attempt < MAX_RETRIES) {
-        await new Promise((r) => setTimeout(r, Math.min(retryAfter * 1000 + 200, 5000)));
+        await new Promise((r) => setTimeout(r, retryAfter * 1000 + 200));
         return telegramCall<T>(token, method, init, attempt + 1);
       }
     }
@@ -272,9 +268,8 @@ async function downloadTelegramText(token: string, fileId: string): Promise<stri
     });
     if (!file.file_path) return null;
 
-    const response = await withTimeout(
-      fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`, { cache: 'no-store' }),
-      TELEGRAM_TIMEOUT_MS,
+    const response = await fetchWithTimeout(
+      `https://api.telegram.org/file/bot${token}/${file.file_path}`, { cache: 'no-store' }, TELEGRAM_TIMEOUT_MS,
     );
     if (!response.ok) return null;
     return await response.text();
@@ -296,19 +291,12 @@ async function downloadTelegramText(token: string, fileId: string): Promise<stri
 export function createTelegramDriver(botTokens: string[]): StorageDriver {
   const pool = botTokens.filter(Boolean);
   const primary = pool[0] ?? '';
-  let roundRobin = 0;
-
-  function nextBotIndex(): number {
-    const index = roundRobin % pool.length;
-    roundRobin += 1;
-    return index;
-  }
 
   const telegramDriver: StorageDriver = {
     mode: 'telegram',
 
     async uploadChunk({ data, name, folder, index, total }) {
-      const botIndex = nextBotIndex();
+      const botIndex = index % pool.length;
       const token = pool[botIndex] ?? primary;
 
       const fileName = formatChunkFilename({ name, folder, index, total });
@@ -351,9 +339,8 @@ export function createTelegramDriver(botTokens: string[]): StorageDriver {
             );
           }
 
-          const response = await withTimeout(
-            fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`, { cache: 'no-store' }),
-            TELEGRAM_TIMEOUT_MS,
+          const response = await fetchWithTimeout(
+            `https://api.telegram.org/file/bot${token}/${file.file_path}`, { cache: 'no-store' }, TELEGRAM_TIMEOUT_MS,
           );
 
           if (!response.ok || !response.body) {

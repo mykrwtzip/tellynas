@@ -8,6 +8,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const cache = new Map<string, Uint8Array>();
 const MAX_ITEMS = 150;
+const pending = new Map<string, Promise<Uint8Array>>();
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const unauthorized = await requireSession();
@@ -20,16 +21,24 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     if (!/^image\/(jpeg|png|webp|gif|avif)$/i.test(file.mime) || file.size > 20 * 1024 * 1024) return jsonError('Thumbnail unavailable.', 415);
     const key = `${file.id}-${file.updatedAt}`;
     const etag = `"thumb-${key}"`;
-    const headers = { 'Content-Type': 'image/webp', 'Cache-Control': 'private, no-store', ETag: etag, 'X-Content-Type-Options': 'nosniff' };
+    const headers = { 'Content-Type': 'image/webp', 'Cache-Control': 'private, max-age=300', ETag: etag, 'X-Content-Type-Options': 'nosniff' };
     if (request.headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers });
     let thumbnail = cache.get(key);
     if (!thumbnail) {
-      const driver = getDriver();
-      const stream = createStoredFileStream(file.chunks, chunk => driver.getChunkStream(chunk.fileId, chunk.botIndex));
-      const bytes = await new Response(stream).arrayBuffer();
-      thumbnail = await sharp(Buffer.from(bytes), { limitInputPixels: 40_000_000 }).rotate().resize({ width: 480, height: 480, fit: 'inside', withoutEnlargement: true }).webp({ quality: 75 }).toBuffer();
-      cache.set(key, thumbnail);
-      if (cache.size > MAX_ITEMS) cache.delete(cache.keys().next().value!);
+      let work = pending.get(key);
+      if (!work) {
+        work = (async () => {
+          const driver = getDriver();
+          const stream = createStoredFileStream(file.chunks, chunk => driver.getChunkStream(chunk.fileId, chunk.botIndex));
+          const bytes = await new Response(stream).arrayBuffer();
+          const result = await sharp(Buffer.from(bytes), { limitInputPixels: 40_000_000 }).rotate().resize({ width: 480, height: 480, fit: 'inside', withoutEnlargement: true }).webp({ quality: 75 }).toBuffer();
+          cache.set(key, result);
+          if (cache.size > MAX_ITEMS) cache.delete(cache.keys().next().value!);
+          return result;
+        })().finally(() => pending.delete(key));
+        pending.set(key, work);
+      }
+      thumbnail = await work;
     }
     return new Response(thumbnail as BodyInit, { headers });
   });

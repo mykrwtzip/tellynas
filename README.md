@@ -259,3 +259,27 @@ compare filenames and sizes, not file content, so matches are only possible
 duplicates. Thumbnails are generated on demand and cached in server
 memory; the first request still fetches the original, and serverless instances
 may discard their cache. Large or unsupported image formats use the original.
+
+### Uploads and tests
+
+Uploads fan chunks across configured bots and can retry completed chunks without
+sending them again while the upload queue remains open. Reloading the page loses
+that in-memory retry state. A retry after a failed finalization reuses the same
+file ID; on multi-instance deployments Telegram's directory updates are not
+atomic, so simultaneous writers still require care. Actual transfer speed also
+depends on the server-to-Telegram connection, Telegram rate limits, and hosting
+limits; Wi-Fi speed and adding bots alone cannot guarantee a transfer rate.
+The app requests up to 300 seconds for upload/finalize functions, but hosting
+plans and proxies may impose shorter limits. Preview images and thumbnails are
+also cached privately in the browser for up to five minutes; the first thumbnail
+still needs the original from Telegram.
+
+Run the queue and bot/metadata regression tests with `npm test`. To include the
+API integration test, build the app and start a separate demo server, then run:
+
+```sh
+DEMO_MODE=true APP_USERNAME=admin APP_PASSWORD=test-password-1234 \
+  AUTH_SECRET=test-secret-long-enough-1234567890abcdef npm start -- -p 3456
+# In another terminal:
+TEST_BASE_URL=http://localhost:3456 npm test
+```
